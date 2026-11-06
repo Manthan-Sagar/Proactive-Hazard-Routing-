@@ -51,3 +51,10 @@ class BenchmarkLocations:
     origin_a_chokepoint: Tuple[int, int] = (250, 580)     # Primary exit bottleneck corridor (cuts off main exit)
     origin_b_peripheral: Tuple[int, int] = (90, 175)      # Peripheral room (0% entrapment)
     origin_c_offcorridor: Tuple[int, int] = (270, 525)    # Near exit off-corridor (<2% entrapment)
+
+    # Convenience aliases and alternative names
+    origin_a: Tuple[int, int] = (250, 580)
+    origin_b: Tuple[int, int] = (90, 175)
+    origin_b_west: Tuple[int, int] = (90, 175)
+    origin_c: Tuple[int, int] = (270, 525)
+
