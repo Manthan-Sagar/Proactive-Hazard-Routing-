@@ -10,6 +10,7 @@ Implements:
 """
 
 import random
+import time
 import numpy as np
 import networkx as nx
 from scipy.ndimage import distance_transform_edt
@@ -37,7 +38,7 @@ class ProactiveEvacuationAgent:
         self.proactive_reroute_count = 0
         self.last_reroute_tick = -100
 
-        # Demographic speeds & priorities matching baseline
+        # Demographic speeds & priorities matching Paper 2
         if agent_type == 'young':
             self.ticks_per_step = 3 + np.random.randint(0, 2)
             self.priority = 1
@@ -78,12 +79,12 @@ class ProactiveCrowdSimulationEngine:
     def __init__(self, nav_graph: nx.Graph, free_space_grid: np.ndarray, exit_nodes: list,
                  sim_config: Optional[SimulationConfig] = None,
                  routing_config: Optional[ProactiveRoutingConfig] = None,
-                 fire_mode: str = 'dynamic', fire_start: Tuple[int, int] = (0, 0)):
+                 fire_mode: str = 'dynamic', fire_start: Tuple[int, int] = (250, 580)):
 
         self.sim_cfg = sim_config or SimulationConfig()
         self.rout_cfg = routing_config or ProactiveRoutingConfig()
 
-        self.nav_graph = nav_graph.copy()
+        self.nav_graph = nav_graph
         self.free_space_grid = free_space_grid
         self.exit_nodes = exit_nodes
         self.h, self.w = free_space_grid.shape
@@ -91,59 +92,86 @@ class ProactiveCrowdSimulationEngine:
         self.occupancy_grid = np.zeros_like(free_space_grid, dtype=bool)
         self.fire_grid = np.zeros_like(free_space_grid, dtype=bool)
         self.hazard_buffer_grid = np.zeros_like(free_space_grid, dtype=bool)
-        self.fire_front = []
+        self.active_fire_front: Set[Tuple[int, int]] = set()
 
         self.fire_mode = fire_mode
         self.current_tick = 0
         self.evacuated_count = 0
         self.agents: List[ProactiveEvacuationAgent] = []
         self.frame_history = []
+        self.last_dijkstra_tick = -100
 
-        # Multi-source Dijkstra distance maps
+        # Dynamic graph node tracking
+        self.burned_graph_nodes: Set[str] = set()
         self.dist_map: Dict[Tuple[float, float], float] = {}
         self.paths: Dict[str, List[str]] = {}
+        self.last_burned_count = 0
+
+        # Initial graph escape paths
         self._compute_global_escape_paths()
+        self.last_burned_count = len(self.burned_graph_nodes)
 
         if fire_mode != 'none':
             self.start_fire(int(fire_start[0]), int(fire_start[1]))
 
     def _compute_global_escape_paths(self):
-        """Computes shortest path from all navigable nodes to the nearest exit."""
-        active_exits = [e for e in self.exit_nodes if e in self.nav_graph and not self.fire_grid[int(self.nav_graph.nodes[e]['pos'][1]), int(self.nav_graph.nodes[e]['pos'][0])]]
+        """Computes shortest paths on the unburned subgraph to the active exits."""
+        valid_nodes = [n for n in self.nav_graph.nodes if n not in self.burned_graph_nodes]
+        sub_g = self.nav_graph.subgraph(valid_nodes)
+        active_exits = [e for e in self.exit_nodes if e in sub_g]
         if not active_exits:
             active_exits = self.exit_nodes
 
-        lengths, paths = nx.multi_source_dijkstra(self.nav_graph, sources=active_exits, weight='weight')
-        self.paths = paths
-        self.dist_map = {self.nav_graph.nodes[n]['pos']: d for n, d in lengths.items()}
+        try:
+            lengths, paths = nx.multi_source_dijkstra(sub_g, sources=active_exits, weight='weight')
+            self.paths = paths
+            self.dist_map = {self.nav_graph.nodes[n]['pos']: d for n, d in lengths.items()}
+            self.last_dijkstra_tick = self.current_tick
+        except Exception as e:
+            pass
 
     def start_fire(self, x: int, y: int):
         if 0 <= y < self.h and 0 <= x < self.w:
             self.fire_grid[y, x] = True
-            self.fire_front.append((x, y))
+            self.active_fire_front.add((x, y))
+            self._update_burned_graph_nodes([(x, y)])
             self._update_hazard_buffer()
+
+    def _update_burned_graph_nodes(self, new_pixels):
+        for px, py in new_pixels:
+            nid = f"Ground_pix_{px}_{py}"
+            if nid in self.nav_graph:
+                self.burned_graph_nodes.add(nid)
 
     def _update_hazard_buffer(self):
         """Calculates repulsion buffer surrounding flames using Euclidean Distance Transform."""
-        if not self.fire_front:
+        if not self.active_fire_front:
             self.hazard_buffer_grid[:] = False
             return
         dist = distance_transform_edt(~self.fire_grid)
         self.hazard_buffer_grid = (dist <= self.rout_cfg.hazard_buffer_margin) & (self.free_space_grid > 0)
 
     def spread_fire(self):
-        new_front = []
+        new_front = set()
+        new_pixels = []
         spread_chance = self.sim_cfg.fire_spread_chance
-        for fx, fy in self.fire_front:
+        for fx, fy in list(self.active_fire_front):
+            has_unburned_neighbor = False
             for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
                 nx_c, ny_c = fx + dx, fy + dy
                 if 0 <= ny_c < self.h and 0 <= nx_c < self.w:
                     if self.free_space_grid[ny_c, nx_c] and not self.fire_grid[ny_c, nx_c]:
+                        has_unburned_neighbor = True
                         if random.random() < spread_chance:
                             self.fire_grid[ny_c, nx_c] = True
-                            new_front.append((nx_c, ny_c))
-        self.fire_front.extend(new_front)
-        if new_front:
+                            new_front.add((nx_c, ny_c))
+                            new_pixels.append((nx_c, ny_c))
+            if not has_unburned_neighbor:
+                self.active_fire_front.remove((fx, fy))
+
+        self.active_fire_front.update(new_front)
+        if new_pixels:
+            self._update_burned_graph_nodes(new_pixels)
             self._update_hazard_buffer()
 
     def add_agent(self, agent: ProactiveEvacuationAgent):
@@ -154,59 +182,72 @@ class ProactiveCrowdSimulationEngine:
 
     def replan_agent(self, agent: ProactiveEvacuationAgent) -> bool:
         """
-        Dynamically replans an escape trajectory avoiding burned and buffer zones.
+        Dynamically assigns a safe escape trajectory avoiding burned and buffer zones.
         """
-        # Find closest node in nav_graph to current position
         cx, cy = int(agent.current_pos[0]), int(agent.current_pos[1])
         best_node, best_d = None, float('inf')
         for dx in range(-4, 5, 2):
             for dy in range(-4, 5, 2):
                 tx, ty = cx + dx, cy + dy
                 nid = f"Ground_pix_{tx}_{ty}"
-                if nid in self.nav_graph and not self.fire_grid[ty, tx]:
+                if nid in self.paths:
                     d = np.hypot(dx, dy)
                     if d < best_d:
                         best_d, best_node = d, nid
 
-        if not best_node or best_node not in self.paths:
-            return False
+        if best_node and best_node in self.paths:
+            path_nodes = self.paths[best_node][::-1]
+            coords = [self.nav_graph.nodes[n]['pos'] for n in path_nodes]
+            if len(coords) > 1:
+                agent.path = coords
+                agent.path_index = 0
+                agent.proactive_reroute_count += 1
+                agent.entered_avoidance = True
+                agent.last_reroute_tick = self.current_tick
+                return True
 
-        # Build trajectory from path dictionary
-        path_nodes = self.paths[best_node][::-1]
-        coords = [self.nav_graph.nodes[n]['pos'] for n in path_nodes]
-        if coords:
-            agent.path = coords
-            agent.path_index = 0
-            agent.proactive_reroute_count += 1
-            agent.entered_avoidance = True
-            agent.last_reroute_tick = self.current_tick
-            return True
+        # If replanning failed, apply backoff cooldown to prevent hot-looping
+        agent.last_reroute_tick = self.current_tick + 50
         return False
 
     def step(self):
         self.current_tick += 1
 
-        # Fire spread update
+        # 1. Fire propagation
         if self.fire_mode == 'dynamic' and self.current_tick % self.sim_cfg.fire_interval == 0:
             self.spread_fire()
-            # If fire entered paths, update global distance field
-            self._compute_global_escape_paths()
 
         active_agents = [a for a in self.agents if not a.is_evacuated]
         # Demographic priority sorting
         active_agents.sort(key=lambda a: (a.priority, random.random()))
 
+        # 2. PROACTIVE VERIFICATION: Inspect upcoming path horizon
+        needs_global_refresh = False
+        compromised_agents = []
+        fire_expanded = len(self.burned_graph_nodes) > self.last_burned_count
+
+        for agent in active_agents:
+            if self.current_tick - agent.last_reroute_tick >= self.rout_cfg.min_reroute_interval:
+                if agent.check_downstream_hazard(self.fire_grid, self.hazard_buffer_grid):
+                    compromised_agents.append(agent)
+                    if fire_expanded:
+                        needs_global_refresh = True
+
+        # Debounced global distance field update (at most once every 50 ticks)
+        if needs_global_refresh and (self.current_tick - self.last_dijkstra_tick >= 50):
+            self._compute_global_escape_paths()
+            self.last_burned_count = len(self.burned_graph_nodes)
+
+        for agent in compromised_agents:
+            self.replan_agent(agent)
+
         current_frame_positions = []
 
+        # 3. Agent motion execution
         for agent in active_agents:
             agent.tick_counter += 1
             if agent.tick_counter >= agent.ticks_per_step:
                 agent.tick_counter = 0
-
-                # 1. PROACTIVE CHECK: Is downstream path blocked?
-                if (self.current_tick - agent.last_reroute_tick > self.rout_cfg.min_reroute_interval and
-                        agent.check_downstream_hazard(self.fire_grid, self.hazard_buffer_grid)):
-                    self.replan_agent(agent)
 
                 next_pos = agent.get_next_pos()
 
@@ -217,7 +258,6 @@ class ProactiveCrowdSimulationEngine:
                     # Immediate flame avoidance
                     if self.fire_grid[ny_c, nx_c]:
                         agent.entered_avoidance = True
-                        # Local best step away from flames
                         best_pos, best_dist = None, float('inf')
                         for dx in [-2, 0, 2]:
                             for dy in [-2, 0, 2]:
