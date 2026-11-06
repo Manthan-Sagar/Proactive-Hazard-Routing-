@@ -19,9 +19,9 @@ $$\mathcal{M}_{\text{Dec-POMDP}} = \langle \mathcal{N}, \mathcal{S}, \mathcal{A}
 
 ## 2. Observation Space Design ($o_i$)
 
-Each agent receives a localized egocentric tensor of size $K \times K \times C$ (default $21 \times 21 \times 6$ pixels, centered on the agent) along with a demographic vector:
+Each agent receives a localized egocentric tensor of size 21 × 21 × 6 (centered on the agent) along with a proprioceptive vector:
 
-### Multi-Channel Spatial Feature Map ($21 \times 21 \times 6$)
+### Multi-Channel Spatial Feature Map (21 × 21 × 6)
 1. **Channel 0 (Traversability):** Binary mask of navigable floor space ($\mathcal{M}=1$) and walls ($\mathcal{M}=0$).
 2. **Channel 1 (Crowd Density):** Binary mask of cells occupied by peer agents ($C(t)=1$).
 3. **Channel 2 (Peer Demographics):** Continuous channel encoding peer priorities ($\pi_{\text{young}}=0.33, \pi_{\text{elderly}}=0.66, \pi_{\text{adult}}=1.0$).
@@ -42,10 +42,12 @@ Each agent receives a localized egocentric tensor of size $K \times K \times C$ 
 
 ### Mode 1: Discrete Spatial Navigation (9-DoF)
 $$\mathcal{A}_{\text{discrete}} = \{\text{Stay}, \text{North}, \text{North-East}, \text{East}, \text{South-East}, \text{South}, \text{South-West}, \text{West}, \text{North-West}\}$$
-Each step attempts to translate the agent by step size (2 pixels) in the chosen direction. Invalid movements (into walls or occupied cells) are masked or rejected.
+
+Each step translates the agent by the step size (2 pixels) in the chosen direction. Invalid movements (into walls or occupied cells) are masked out before action sampling.
 
 ### Mode 2: Macro-Action / Goal-Conditioned Steering (Hierarchical MARL)
 $$\mathcal{A}_{\text{macro}} = \{\text{Follow Default Path}, \text{Detour Left}, \text{Detour Right}, \text{Retreat to Room}, \text{Switch to Secondary Exit}, \text{Yield Right-of-Way}\}$$
+
 High-level macro actions invoke sub-graph local planners, drastically shrinking the exploration horizon.
 
 ---
@@ -54,14 +56,14 @@ High-level macro actions invoke sub-graph local planners, drastically shrinking 
 
 $$\mathcal{R}_i(t) = R_{\text{evac}} + R_{\text{progress}} + R_{\text{hazard}} + R_{\text{collision}} + R_{\text{social}} + R_{\text{time}}$$
 
-| Term | Mathematical Formulation | Weight / Value | Purpose |
-| :--- | :--- | :--- | :--- |
-| **$R_{\text{evac}}$** | $+R_{\text{goal}} \cdot \mathbb{I}(\text{reached exit})$ | $+100.0$ | Primary task incentive |
-| **$R_{\text{progress}}$** | $\beta \cdot \max(0, \Phi^*(\mathbf{p}_i(t-1)) - \Phi^*(\mathbf{p}_i(t)))$ | $+2.0$ | Encourages forward egress flow |
-| **$R_{\text{hazard}}$** | $-R_{\text{fatal}} \cdot \mathbb{I}(\mathbf{p}_i \in \mathcal{F}) - \kappa \cdot \exp(-d_i / \lambda)$ | $-200.0$ (burn), $\kappa=10.0$ | Strict proactive fire avoidance |
-| **$R_{\text{collision}}$** | $-c_{\text{bump}} \cdot \mathbb{I}(\text{attempted collision})$ | $-1.5$ | Prevents crowding jams & cell contention |
-| **$R_{\text{social}}$** | $+r_{\text{yield}} \cdot \mathbb{I}(\text{adult yielded to elderly})$ | $+3.0$ | Enforces demographic right-of-way |
-| **$R_{\text{time}}$** | $-c_{\text{tick}}$ per simulation step | $-0.05$ | Minimizes total evacuation time |
+| Term | Mathematical Formulation | Nominal Weight | Purpose |
+| :--- | :--- | :---: | :--- |
+| **$R_{\text{evac}}$** | $+R_{\text{goal}} \cdot \mathbb{I}(\text{reached exit})$ | +100.0 | Primary task incentive |
+| **$R_{\text{progress}}$** | $\beta \cdot \max(0, \Phi^*(\mathbf{p}_i(t-1)) - \Phi^*(\mathbf{p}_i(t)))$ | +2.0 | Encourages forward egress flow |
+| **$R_{\text{hazard}}$** | $-R_{\text{fatal}} \cdot \mathbb{I}(\mathbf{p}_i \in \mathcal{F}) - \kappa \cdot \exp(-d_i / \lambda)$ | -200.0 (burn), $\kappa=10.0$ | Strict proactive fire avoidance |
+| **$R_{\text{collision}}$** | $-c_{\text{bump}} \cdot \mathbb{I}(\text{attempted collision})$ | -1.5 | Prevents crowding jams & cell contention |
+| **$R_{\text{social}}$** | $+r_{\text{yield}} \cdot \mathbb{I}(\text{adult yielded to elderly})$ | +3.0 | Enforces demographic right-of-way |
+| **$R_{\text{time}}$** | $-c_{\text{tick}}$ per simulation step | -0.05 | Minimizes total evacuation time |
 
 ---
 
@@ -83,6 +85,5 @@ $$\mathcal{R}_i(t) = R_{\text{evac}} + R_{\text{progress}} + R_{\text{hazard}} +
 ```
 
 * **Algorithm:** Multi-Agent Proximal Policy Optimization (**MAPPO**) with parameter sharing across agents of the same demographic class.
-* **Centralized Training, Decentralized Execution (CTDE):** The Critic $V_\psi(s)$ observes global floor state during simulation training, while the Actor $\pi_\theta(a_i \mid o_i)$ executes purely on local sensory windows.
+* **Centralized Training, Decentralized Execution (CTDE):** The Critic $V_\psi(s)$ observes the global floor state during simulation training, while the Actor $\pi_\theta(a_i \mid o_i)$ executes purely on local sensory windows.
 * **Action Masking:** Actions attempting to step into impassable walls or occupied cells are masked out with logits set to $-\infty$, preventing trivial invalid action exploration.
-

@@ -6,7 +6,7 @@
 
 A dual-track framework for proactive hazard routing during architectural indoor fires:
 1. **Track A (Dynamic Search):** Downstream trajectory verification ($H$), Euclidean distance transform hazard buffer, and event-driven graph repair.
-2. **Track B (MARL):** Dec-POMDP multi-agent Gymnasium environment (`HazardEvacEnv`) with local spatial vision tensors ($21 \times 21 \times 6$) for multi-agent reinforcement learning.
+2. **Track B (MARL):** Dec-POMDP multi-agent Gymnasium environment (`HazardEvacEnv`) with local spatial vision tensors (21 × 21 × 6) for multi-agent reinforcement learning.
 
 ---
 

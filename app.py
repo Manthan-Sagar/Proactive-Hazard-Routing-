@@ -183,15 +183,15 @@ with tabs[1]:
     with cB:
         st.markdown(f"""
         ### Floor Statistics
-        * **Image Dimensions:** {img.shape[1]} $\\times$ {img.shape[0]} px
+        * **Image Dimensions:** {img.shape[1]} × {img.shape[0]} px
         * **Walkable Space:** {int(np.sum(free_space))} pixels
         * **Navigable Graph Nodes:** {graph.number_of_nodes():,} nodes
         * **Direct Outdoor Exits:** {len(exits)} exit(s)
         * **Room Doors & Openings:** {len(annotations.get('doors', []))} doorways
         
         ### Proactive Rerouting Mechanism
-        1. **Downstream Horizon ($H={lookahead}$):** Detects flame/buffer {lookahead} steps ahead along planned trajectories.
-        2. **Repulsion Buffer:** An EDT distance buffer ($r_b={buffer_margin}\\text{{ px}}$) repels crowds before entering lethal smoke zones.
+        1. **Downstream Horizon (H = {lookahead}):** Detects flame/buffer {lookahead} steps ahead along planned trajectories.
+        2. **Repulsion Buffer:** An EDT distance buffer (radius = {buffer_margin} px) repels crowds before entering lethal smoke zones.
         3. **Dynamic Repair:** Dynamically invalidates blocked corridors, steering occupants into parallel unblocked pathways.
         """)
 
@@ -201,7 +201,7 @@ with tabs[2]:
     st.markdown("""
     | Milestone | Component | Status | Details |
     | :--- | :--- | :---: | :--- |
-    | **Track A** | Proactive Dynamic Rerouting Engine | **Completed & Verified** | Lookahead horizon $H=25$, EDT buffer, drops chokepoint entrapment from 20% to 0.5%. |
-    | **Track B (Env)** | Gymnasium MARL Environment (`HazardEvacEnv`) | **Completed & Verified** | Dec-POMDP, $(21 \\times 21 \\times 6)$ observation tensor, 9-DoF action masking, reward shaping. |
+    | **Track A** | Proactive Dynamic Rerouting Engine | **Completed & Verified** | Lookahead horizon H = 25, EDT buffer, drops chokepoint entrapment from 20% to 0.5%. |
+    | **Track B (Env)** | Gymnasium MARL Environment (`HazardEvacEnv`) | **Completed & Verified** | Dec-POMDP, 21 × 21 × 6 observation tensor, 9-DoF action masking, reward shaping. |
     | **Track B (Model)** | PyTorch Actor-Critic Network & Training | **Documented & Ready** | Scaffolding complete; neural policy training loop designed for multi-agent PPO. |
     """)
