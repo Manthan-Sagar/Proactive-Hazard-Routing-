@@ -346,3 +346,4 @@ class HazardEvacEnv(gym.Env):
         }
 
         return observations, rewards, terminated, truncated, info
+

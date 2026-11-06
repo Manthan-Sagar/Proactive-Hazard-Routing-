@@ -85,3 +85,4 @@ $$\mathcal{R}_i(t) = R_{\text{evac}} + R_{\text{progress}} + R_{\text{hazard}} +
 * **Algorithm:** Multi-Agent Proximal Policy Optimization (**MAPPO**) with parameter sharing across agents of the same demographic class.
 * **Centralized Training, Decentralized Execution (CTDE):** The Critic $V_\psi(s)$ observes global floor state during simulation training, while the Actor $\pi_\theta(a_i \mid o_i)$ executes purely on local sensory windows.
 * **Action Masking:** Actions attempting to step into impassable walls or occupied cells are masked out with logits set to $-\infty$, preventing trivial invalid action exploration.
+

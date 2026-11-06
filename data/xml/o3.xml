@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<annotations>
+  <version>1.1</version>
+  <meta>
+    <task>
+      <id>1691767</id>
+      <name>mtp2</name>
+      <size>1</size>
+      <mode>annotation</mode>
+      <overlap>0</overlap>
+      <bugtracker></bugtracker>
+      <created>2025-10-14 09:43:49.338781+00:00</created>
+      <updated>2025-10-14 09:47:16.446724+00:00</updated>
+      <subset>default</subset>
+      <start_frame>0</start_frame>
+      <stop_frame>0</stop_frame>
+      <frame_filter></frame_filter>
+      <segments>
+        <segment>
+          <id>3119994</id>
+          <start>0</start>
+          <stop>0</stop>
+          <url>https://app.cvat.ai/api/jobs/3118251</url>
+        </segment>
+      </segments>
+      <owner>
+        <username>anik95</username>
+        <email>anikdwivedi80555@gmail.com</email>
+      </owner>
+      <assignee></assignee>
+      <labels>
+        <label>
+          <name>door</name>
+          <color>#f59331</color>
+          <type>polyline</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>exit</name>
+          <color>#ff355e</color>
+          <type>polyline</type>
+          <attributes>
+          </attributes>
+        </label>
+      </labels>
+    </task>
+    <dumped>2025-10-14 09:47:41.558514+00:00</dumped>
+  </meta>
+  <image id="0" name="o3.webp" width="383" height="280">
+    <polyline label="door" source="manual" occluded="0" points="111.56,83.99;111.93,114.70;111.56,114.70" z_order="0">
+    </polyline>
+    <polyline label="door" source="manual" occluded="0" points="251.63,96.72;281.60,97.10" z_order="0">
+    </polyline>
+    <polyline label="door" source="manual" occluded="0" points="113.80,182.49;113.80,213.58" z_order="0">
+    </polyline>
+    <polyline label="door" source="manual" occluded="0" points="251.63,159.65;281.97,160.40" z_order="0">
+    </polyline>
+    <polyline label="door" source="manual" occluded="0" points="325.42,114.70;325.42,144.67" z_order="0">
+    </polyline>
+    <polyline label="exit" source="manual" occluded="0" points="15.30,42.79;15.30,85.86;15.30,85.86" z_order="0">
+    </polyline>
+    <polyline label="exit" source="manual" occluded="0" points="269.24,13.58;314.18,13.20" z_order="0">
+    </polyline>
+  </image>
+</annotations>

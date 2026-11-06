@@ -77,3 +77,4 @@ When an agent in a corridor detects a fire front blocking the corridor exit:
 2. **Reverse Target Waypoint:** Identify the nearest topological junction or room center behind the agent.
 3. **Alternate Destination Routing:** Reroute toward the secondary exit or nearest fire stairs ($V_{\text{stairs}}$).
 4. **Collision Cooperation:** High-priority agents signal backward evacuation, causing trailing occupants to halt or retreat cooperatively.
+

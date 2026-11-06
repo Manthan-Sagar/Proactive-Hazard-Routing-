@@ -17,19 +17,16 @@ import numpy as np
 # Path configuration
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_dir)
-parent_root = os.path.dirname(project_root)
-
 sys.path.insert(0, project_root)
-sys.path.insert(0, os.path.join(parent_root, 'paper'))
 
-from src.baseline_evaluator import load_ground_floor
+from src.floor_loader import load_floor
 from src.env_evac import HazardEvacEnv
 import networkx as nx
 
 
 def test_hazard_evac_env():
     print("Testing HazardEvacEnv Gymnasium Environment...")
-    img, free_space, graph, exits, ann = load_ground_floor()
+    img, free_space, graph, exits, ann = load_floor("ground")
 
     # Precompute dist_map
     lengths, _ = nx.multi_source_dijkstra(graph, sources=exits, weight='weight')
@@ -85,3 +82,4 @@ def test_hazard_evac_env():
 
 if __name__ == "__main__":
     test_hazard_evac_env()
+

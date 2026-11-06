@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<annotations>
+  <version>1.1</version>
+  <meta>
+    <task>
+      <id>1715978</id>
+      <name>mtppg</name>
+      <size>1</size>
+      <mode>annotation</mode>
+      <overlap>0</overlap>
+      <bugtracker></bugtracker>
+      <created>2025-10-23 09:42:27.139358+00:00</created>
+      <updated>2025-10-23 10:00:40.752253+00:00</updated>
+      <subset>default</subset>
+      <start_frame>0</start_frame>
+      <stop_frame>0</stop_frame>
+      <frame_filter></frame_filter>
+      <segments>
+        <segment>
+          <id>3150789</id>
+          <start>0</start>
+          <stop>0</stop>
+          <url>https://app.cvat.ai/api/jobs/3149372</url>
+        </segment>
+      </segments>
+      <owner>
+        <username>aditya1443</username>
+        <email>tumho6969@gmail.com</email>
+      </owner>
+      <assignee></assignee>
+      <labels>
+        <label>
+          <name>door</name>
+          <color>#f59331</color>
+          <type>polyline</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>exit</name>
+          <color>#fa3253</color>
+          <type>polyline</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>stairs</name>
+          <color>#34d1b7</color>
+          <type>rectangle</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>lift</name>
+          <color>#33ddff</color>
+          <type>rectangle</type>
+          <attributes>
+          </attributes>
+        </label>
+      </labels>
+    </task>
+    <dumped>2025-10-23 10:00:54.491884+00:00</dumped>
+  </meta>
+  <image id="0" name="g.png" width="362" height="701">
+    <polyline label="door" source="manual" occluded="0" points="153.77,285.60;154.70,313.61" z_order="0">
+    </polyline>
+    <polyline label="door" source="manual" occluded="0" points="151.90,371.49;153.77,399.50" z_order="0">
+    </polyline>
+    <polyline label="door" source="manual" occluded="0" points="152.84,476.99;152.84,562.89" z_order="0">
+    </polyline>
+    <polyline label="door" source="manual" occluded="0" points="226.59,474.19;227.53,564.75" z_order="0">
+    </polyline>
+    <polyline label="door" source="manual" occluded="0" points="228.46,361.22;229.39,416.31" z_order="0">
+    </polyline>
+    <polyline label="door" source="manual" occluded="0" points="229.39,280.00;228.46,328.55" z_order="0">
+    </polyline>
+    <polyline label="door" source="manual" occluded="0" points="154.70,125.01;154.70,162.36" z_order="0">
+    </polyline>
+    <polyline label="door" source="manual" occluded="0" points="227.53,125.95;228.46,165.16" z_order="0">
+    </polyline>
+    <polyline label="door" source="manual" occluded="0" points="153.77,47.52;153.77,91.40" z_order="0">
+    </polyline>
+    <polyline label="door" source="manual" occluded="0" points="228.46,45.66;229.39,90.47" z_order="0">
+    </polyline>
+    <polyline label="exit" source="manual" occluded="0" points="263.00,615.17;263.01,633.84" z_order="0">
+    </polyline>
+    <box label="stairs" source="manual" occluded="0" xtl="51.54" ytl="225.28" xbr="151.56" ybr="255.54" z_order="0">
+    </box>
+    <box label="lift" source="manual" occluded="0" xtl="232.25" ytl="200.06" xbr="287.73" ybr="234.52" z_order="0">
+    </box>
+  </image>
+</annotations>

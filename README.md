@@ -1,60 +1,56 @@
-# 🛡️ Proactive Hazard Routing for Constraint-Aware Indoor Evacuation
+# 🛡️ Proactive Hazard-Adaptive Indoor Routing (PHAIR)
 
-## 📌 Context & Motivation
+[![Python 3.13](https://img.shields.io/badge/Python-3.13-blue.svg)](https://www.python.org/)
+[![Gymnasium 1.4.0](https://img.shields.io/badge/Gymnasium-1.4.0-green.svg)](https://gymnasium.farama.org/)
+[![PyTorch 2.15](https://img.shields.io/badge/PyTorch-2.15-orange.svg)](https://pytorch.org/)
 
-In multi-agent indoor evacuation simulations, purely geometric shortest paths fail when dynamic, life-threatening hazards (e.g., stochastic spreading fire, smoke accumulation, or structural debris) enter the spatial graph. 
-
-In the baseline study (*"A Demographic-Aware Multi-Agent Crowd Simulation Engine for Hazard-Adaptive Indoor Evacuation"*), the system deployed **decentralized greedy local avoidance**:
-* When an occupant's immediate next planned waypoint is burning, the agent queries its immediate 8-neighborhood for an unburned cell minimizing static geodesic distance to the exit.
-* **The Failure Mode (Experiment 2b):** At a corridor chokepoint (Origin A), this greedy 1-step reactive heuristic causes a **~45% entrapment rate** (mean 67.9 out of 150 agents fail to escape). Occupants swarm down the corridor toward an exit that is severed downstream, creating dense crowd deadlocks at the flame boundary with zero capacity to turn around.
-
-### Objective
-Design, implement, and benchmark **Proactive Hazard Routing** mechanisms that eliminate dead-end entrapment by predicting or sensing hazards ahead of time and executing dynamic rerouting.
+A dual-track framework for proactive hazard routing during architectural indoor fires:
+1. **Track A (Dynamic Search):** Downstream trajectory verification ($H$), Euclidean distance transform hazard buffer, and event-driven graph repair.
+2. **Track B (MARL):** Dec-POMDP multi-agent Gymnasium environment (`HazardEvacEnv`) with local spatial vision tensors ($21 \times 21 \times 6$) for multi-agent reinforcement learning.
 
 ---
 
-## 🗺️ Dual-Track Solution Architecture
+## 📁 Repository Structure
 
 ```
-                                 [ Floor Plan & Semantic Graph ]
-                                                │
-                     ┌──────────────────────────┴──────────────────────────┐
-                     ▼                                                     ▼
-        [ Track A: Dynamic Planning ]                         [ Track B: Multi-Agent RL ]
-        Deterministic & Incremental                           Decentralized Learned Policy
-                     │                                                     │
-       • Proactive Sensing Horizon                           • Local Multi-Channel Spatial Window
-       • Dynamic Path Invalidation                           • Demographic Conditioning (Adult/Child/Elderly)
-       • Incremental D* Lite / Replanning                    • MARL Policy (MAPPO / Independent PPO)
-       • Voronoi / Topological Exit Switching                • Cooperative Yielding & Bottleneck Flow
-                     │                                                     │
-                     └──────────────────────────┬──────────────────────────┘
-                                                ▼
-                             [ Standardized Evaluation Benchmarks ]
-                             • Entrapment Rate (% Trapped)
-                             • Total Evacuation Time (Ticks)
-                             • Bottleneck Specific Throughput (agents/tick)
-                             • Per-Tick Computational Overhead (ms)
+proactive_hazard_routing/
+├── data/                          # Local isolated CAD rasters & annotations
+│   ├── floors/                    # Ground, 1st floor, Penthouse, Office 1 PNGs
+│   └── xml/                       # Polyline XML annotations (doors, exits, stairs)
+├── docs/
+│   ├── 01_problem_formulation.md  # Continuous-to-grid mapping and failure modes
+│   ├── 02_dynamic_planning_framework.md # Dynamic planning & lookahead H
+│   ├── 03_marl_architecture.md    # Dec-POMDP formulation & reward shaping
+│   └── 04_experimental_roadmap.md # Evaluation protocols & seed statistics
+├── src/
+│   ├── __init__.py
+│   ├── config.py                  # Simulation & routing hyperparameters
+│   ├── floor_loader.py            # Isolated floor loader & navigation graph builder
+│   ├── proactive_engine.py        # Track A: Proactive dynamic routing engine
+│   └── env_evac.py                # Track B: Gymnasium multi-agent environment
+├── tests/
+│   ├── test_env.py                # Gymnasium environment unit tests
+│   └── test_proactive_vs_baseline.py # Comparative benchmark test
+├── app.py                         # Interactive Streamlit dashboard
+├── PROJECT_STATUS.md              # Detailed project milestone tracking
+└── README.md
 ```
 
 ---
 
-## 📑 Documentation Structure
+## 🚀 Quickstart
 
-Detailed engineering blueprints and theoretical formulations are documented in [`docs/`](./docs/):
+### 1. Launch the Web Dashboard
+```powershell
+streamlit run app.py
+```
 
-1. **[`01_problem_formulation.md`](./docs/01_problem_formulation.md)**: Mathematical analysis of the chokepoint entrapment failure mode, gradient inversion, and baseline mechanics.
-2. **[`02_dynamic_planning_framework.md`](./docs/02_dynamic_planning_framework.md)**: Specification for deterministic proactive planning: Sensing Horizons, Dynamic Dijkstra Invalidation, and $D^*$ Lite.
-3. **[`03_marl_architecture.md`](./docs/03_marl_architecture.md)**: Dec-POMDP specification for Multi-Agent Reinforcement Learning, state/action spaces, reward shaping, and training strategy.
-4. **[`04_experimental_roadmap.md`](./docs/04_experimental_roadmap.md)**: Phased implementation milestones, validation protocol, and hypothesis testing.
+### 2. Run Gymnasium Environment Verification
+```powershell
+python tests/test_env.py
+```
 
----
-
-## 🚀 Phased Roadmap
-
-| Phase | Description | Deliverables | Status |
-| :---: | :--- | :--- | :---: |
-| **Phase 1** | **Foundations & Architecture Specification** | Mathematical formulation, project documentation, reproducible baseline testbed | 🟢 Completed |
-| **Phase 2** | **Proactive Sensing & Dynamic Incremental Search** | Lookahead horizon $H$, downstream route verification, dynamic exit switching, $D^*$ Lite | 🟡 Next Up |
-| **Phase 3** | **MARL Environment & Policy Modeling** | Gymnasium/PettingZoo wrapper, feature extraction, policy training & simulation | ⚪ Planned |
-| **Phase 4** | **Comparative Benchmarks & Paper Integration** | Direct side-by-side evaluation against greedy baseline across seeds and fire origins | ⚪ Planned |
+### 3. Run Comparative Egress Benchmark
+```powershell
+python tests/test_proactive_vs_baseline.py
+```

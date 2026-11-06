@@ -5,3 +5,4 @@ for hazard-adaptive multi-agent crowd evacuation.
 """
 
 __version__ = "0.1.0"
+

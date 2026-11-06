@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<annotations>
+  <version>1.1</version>
+  <meta>
+    <task>
+      <id>2088821</id>
+      <name>gg</name>
+      <size>1</size>
+      <mode>annotation</mode>
+      <overlap>0</overlap>
+      <bugtracker></bugtracker>
+      <created>2026-03-11 22:27:20.087731+00:00</created>
+      <updated>2026-03-11 22:38:40.682677+00:00</updated>
+      <subset>default</subset>
+      <start_frame>0</start_frame>
+      <stop_frame>0</stop_frame>
+      <frame_filter></frame_filter>
+      <segments>
+        <segment>
+          <id>3721456</id>
+          <start>0</start>
+          <stop>0</stop>
+          <url>https://app.cvat.ai/api/tasks/2088821/dataset/export/api/jobs/3722145</url>
+        </segment>
+      </segments>
+      <owner>
+        <username>random8</username>
+        <email>r68133347@gmail.com</email>
+      </owner>
+      <assignee></assignee>
+      <labels>
+        <label>
+          <name>door</name>
+          <color>#f59331</color>
+          <type>polyline</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>exit</name>
+          <color>#fa3253</color>
+          <type>polyline</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>stairs</name>
+          <color>#34d1b7</color>
+          <type>rectangle</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>lift</name>
+          <color>#33ddff</color>
+          <type>rectangle</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>stairs door</name>
+          <color>#ddff33</color>
+          <type>polyline</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>lift door</name>
+          <color>#b83df5</color>
+          <type>polyline</type>
+          <attributes>
+          </attributes>
+        </label>
+        <label>
+          <name>boundary</name>
+          <color>#fafa37</color>
+          <type>polyline</type>
+          <attributes>
+          </attributes>
+        </label>
+      </labels>
+    </task>
+    <dumped>2026-03-11 22:42:28.810277+00:00</dumped>
+  </meta>
+  <image id="0" name="g.png" width="362" height="701">
+    <polyline label="door" source="manual" occluded="0" points="153.07,55.08;153.38,80.23" z_order="0">
+    </polyline>
+    <polyline label="door" source="manual" occluded="0" points="228.52,53.85;228.52,77.16" z_order="0">
+    </polyline>
+    <polyline label="door" source="manual" occluded="0" points="153.07,132.98;153.07,159.66" z_order="0">
+    </polyline>
+    <polyline label="door" source="manual" occluded="0" points="228.21,132.67;228.21,156.90" z_order="0">
+    </polyline>
+    <polyline label="door" source="manual" occluded="0" points="153.16,293.58;153.16,314.10" z_order="0">
+    </polyline>
+    <polyline label="door" source="manual" occluded="0" points="228.27,292.64;227.80,317.37" z_order="0">
+    </polyline>
+    <polyline label="door" source="manual" occluded="0" points="153.63,376.61;153.63,399.47" z_order="0">
+    </polyline>
+    <polyline label="door" source="manual" occluded="0" points="227.80,374.75;228.27,400.87" z_order="0">
+    </polyline>
+    <polyline label="door" source="manual" occluded="0" points="153.53,503.43;153.90,533.41" z_order="0">
+    </polyline>
+    <polyline label="door" source="manual" occluded="0" points="228.12,499.30;228.87,530.79" z_order="0">
+    </polyline>
+    <box label="stairs" source="manual" occluded="0" xtl="59.02" ytl="226.11" xbr="151.15" ybr="253.21" z_order="0">
+    </box>
+    <box label="lift" source="manual" occluded="0" xtl="231.83" ytl="198.42" xbr="290.24" ybr="230.33" z_order="0">
+    </box>
+    <polyline label="stairs door" source="manual" occluded="0" points="151.19,226.15;151.19,253.47" z_order="0">
+    </polyline>
+    <polyline label="lift door" source="manual" occluded="0" points="231.71,202.63;231.87,231.05" z_order="0">
+    </polyline>
+    <polyline label="exit" source="manual" occluded="0" points="263.29,616.39;263.29,634.97" z_order="0">
+    </polyline>
+    <polyline label="boundary" source="manual" occluded="0" points="261.74,632.36;337.42,632.36;335.59,18.77;42.02,17.86;42.93,685.24;265.39,670.65;262.65,632.36" z_order="0">
+    </polyline>
+  </image>
+</annotations>

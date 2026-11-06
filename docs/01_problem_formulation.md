@@ -74,3 +74,4 @@ $$\text{Evacuated Fraction} = 0.547 \pm 0.066, \quad \text{Mean Trapped} = 67.9 
      * Lookahead horizon $> 1$ step.
      * Dynamic path invalidation when downstream segments are blocked.
      * Multi-destination re-evaluation.
+
