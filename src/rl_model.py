@@ -8,16 +8,49 @@ import torch.nn as nn
 from torch.distributions import Categorical
 
 
+class SpatialCNN(nn.Module):
+    """Convolutional visual feature extractor for egocentric grid (21 x 21 x 6)."""
+    def __init__(self, in_channels: int = 6, out_dim: int = 128):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2), # 21x21 -> 10x10
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d((5, 5)), # (B, 64, 5, 5)
+            nn.Flatten(),
+            nn.Linear(64 * 5 * 5, out_dim),
+            nn.ReLU()
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.conv(x)
+
+
+class ProprioMLP(nn.Module):
+    """Multi-layer perceptron for agent proprioception vector (R^7)."""
+    def __init__(self, in_dim: int = 7, out_dim: int = 32):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(in_dim, 32),
+            nn.ReLU(),
+            nn.Linear(32, out_dim),
+            nn.ReLU()
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.mlp(x)
+
+
 class ActorCriticNetwork(nn.Module):
     """
     Multi-Agent Actor-Critic Neural Network for Proactive Fire Evacuation.
 
     Observation Architecture:
       1. Spatial CNN: Ingests local egocentric grid (21 x 21 x 6)
-         - Channels: [FreeSpace, Occupancy, Padding, Fire, HazardDistance, NormalizedPotential]
       2. Proprioception MLP: Ingests agent status vector (R^7)
-         - Features: [DemographicOneHot (3), SpeedTicksFrac, DistToExit, DistToFire, DirToExitX]
-      3. Fusion Trunk: Concatenates visual and proprioceptive representations.
+      3. Fusion Trunk: 128 (CNN) + 32 (Proprio) -> 128
       4. Actor Head: Outputs 9-DoF discrete action distribution with action masking.
       5. Critic Head: Outputs scalar state value V(s).
     """
@@ -28,37 +61,15 @@ class ActorCriticNetwork(nn.Module):
         self.proprio_dim = proprio_dim
         self.action_dim = action_dim
 
-        # 1. Spatial CNN Feature Extractor
-        self.cnn = nn.Sequential(
-            nn.Conv2d(spatial_channels, 32, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2), # 21x21 -> 10x10
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d((5, 5)), # (B, 64, 5, 5)
-            nn.Flatten(),
-            nn.Linear(64 * 5 * 5, 128),
-            nn.ReLU()
-        )
+        self.cnn = SpatialCNN(spatial_channels, out_dim=128)
+        self.proprio_mlp = ProprioMLP(proprio_dim, out_dim=32)
 
-        # 2. Proprioception MLP
-        self.proprio_mlp = nn.Sequential(
-            nn.Linear(proprio_dim, 32),
-            nn.ReLU(),
-            nn.Linear(32, 32),
-            nn.ReLU()
-        )
-
-        # 3. Fusion Backbone (128 CNN features + 32 Proprio features = 160)
         self.fusion = nn.Sequential(
             nn.Linear(128 + 32, 128),
             nn.ReLU()
         )
 
-        # 4. Policy (Actor) Head
         self.actor_head = nn.Linear(128, action_dim)
-
-        # 5. Value (Critic) Head
         self.critic_head = nn.Sequential(
             nn.Linear(128, 64),
             nn.ReLU(),
@@ -72,16 +83,14 @@ class ActorCriticNetwork(nn.Module):
         action_mask: Optional[Union[np.ndarray, torch.Tensor]] = None,
         device: Optional[torch.device] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        """Converts inputs to tensors and ensures proper shapes and device."""
         if device is None:
             device = next(self.parameters()).device
 
-        # Ensure spatial is (Batch, Channels, Height, Width)
         if isinstance(spatial, np.ndarray):
             spatial = torch.from_numpy(spatial).float()
-        if spatial.ndim == 3: # (H, W, C) -> (1, C, H, W)
+        if spatial.ndim == 3:
             spatial = spatial.permute(2, 0, 1).unsqueeze(0)
-        elif spatial.ndim == 4 and spatial.shape[-1] == self.spatial_channels: # (B, H, W, C) -> (B, C, H, W)
+        elif spatial.ndim == 4 and spatial.shape[-1] == self.spatial_channels:
             spatial = spatial.permute(0, 3, 1, 2)
 
         if isinstance(proprio, np.ndarray):
@@ -104,25 +113,14 @@ class ActorCriticNetwork(nn.Module):
         proprio: torch.Tensor,
         action_mask: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Forward pass computing masked action logits and state value.
-        """
-        # Spatial visual features
         spatial_feat = self.cnn(spatial)
-
-        # Proprioceptive features
         proprio_feat = self.proprio_mlp(proprio)
-
-        # Fused state representation
         latent = self.fusion(torch.cat([spatial_feat, proprio_feat], dim=-1))
 
-        # Raw action logits
         logits = self.actor_head(latent)
 
-        # Action Masking: mask out collision/invalid directions with large negative logits
         if action_mask is not None:
             mask_bool = action_mask.bool()
-            # If all actions are somehow masked, fallback to stay (action 0)
             all_masked = (~mask_bool).all(dim=-1, keepdim=True)
             safe_mask = mask_bool.clone()
             safe_mask[:, 0] = torch.where(all_masked.squeeze(-1), True, safe_mask[:, 0])
@@ -130,9 +128,7 @@ class ActorCriticNetwork(nn.Module):
             neg_inf = torch.tensor(-1e8, device=logits.device, dtype=logits.dtype)
             logits = torch.where(safe_mask, logits, neg_inf)
 
-        # State value estimation
         value = self.critic_head(latent).squeeze(-1)
-
         return logits, value
 
     def act(
@@ -142,13 +138,6 @@ class ActorCriticNetwork(nn.Module):
         action_mask: Optional[Union[np.ndarray, torch.Tensor]] = None,
         deterministic: bool = False
     ) -> Tuple[Union[int, np.ndarray], np.ndarray, np.ndarray]:
-        """
-        Inference method for agent stepping during rollout.
-        Returns:
-            action (int or np.ndarray): Sampled or greedy action index.
-            log_prob (np.ndarray): Log probability of selected action.
-            value (np.ndarray): Critic's estimated state value.
-        """
         device = next(self.parameters()).device
         s_tensor, p_tensor, m_tensor = self._prepare_inputs(spatial, proprio, action_mask, device)
 
@@ -178,13 +167,6 @@ class ActorCriticNetwork(nn.Module):
         actions: torch.Tensor,
         action_mask: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Evaluates batch transitions for PPO surrogate loss and GAE value updates.
-        Returns:
-            values: Estimated state values V(s).
-            log_probs: Log probabilities log pi(a | s).
-            dist_entropy: Policy entropy for exploration regularization.
-        """
         logits, values = self.forward(spatial, proprio, action_mask)
         dist = Categorical(logits=logits)
 
@@ -194,12 +176,124 @@ class ActorCriticNetwork(nn.Module):
         return values, log_probs, dist_entropy
 
     def save(self, filepath: str) -> None:
-        """Saves network weights."""
         os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
         torch.save(self.state_dict(), filepath)
 
     def load(self, filepath: str, map_location: str = "cpu") -> None:
-        """Loads network weights."""
         state_dict = torch.load(filepath, map_location=map_location)
         self.load_state_dict(state_dict)
 
+
+class ActorCriticRNN(ActorCriticNetwork):
+    """
+    Recurrent (RNN / GRU) Actor-Critic Network for Partially Observable (Dec-POMDP) Evacuation.
+
+    Maintains an internal hidden state vector (128 dimensions) over time, allowing agents
+    to remember previously seen fire boundaries, dead-ends, and congestion patterns
+    even when they step outside their local 21 x 21 vision window.
+    """
+
+    def __init__(self, spatial_channels: int = 6, proprio_dim: int = 7, action_dim: int = 9, rnn_hidden_dim: int = 128):
+        super().__init__(spatial_channels, proprio_dim, action_dim)
+        self.rnn_hidden_dim = rnn_hidden_dim
+
+        # Recurrent GRU memory unit
+        self.gru = nn.GRUCell(128, rnn_hidden_dim)
+
+        # Actor & Critic heads operate on recurrent memory representation
+        self.actor_head = nn.Linear(rnn_hidden_dim, action_dim)
+        self.critic_head = nn.Sequential(
+            nn.Linear(rnn_hidden_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1)
+        )
+
+    def forward_rnn(
+        self,
+        spatial: torch.Tensor,
+        proprio: torch.Tensor,
+        action_mask: Optional[torch.Tensor] = None,
+        hidden_state: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Forward step with recurrent hidden state transition.
+        Returns:
+            logits: Masked action logits (B, 9)
+            value: Estimated state value V(s) (B,)
+            next_hidden: Updated recurrent memory (B, 128)
+        """
+        spatial_feat = self.cnn(spatial)
+        proprio_feat = self.proprio_mlp(proprio)
+        fused = self.fusion(torch.cat([spatial_feat, proprio_feat], dim=-1))
+
+        if hidden_state is None:
+            hidden_state = torch.zeros(fused.size(0), self.rnn_hidden_dim, device=fused.device)
+
+        next_hidden = self.gru(fused, hidden_state)
+
+        logits = self.actor_head(next_hidden)
+
+        if action_mask is not None:
+            mask_bool = action_mask.bool()
+            all_masked = (~mask_bool).all(dim=-1, keepdim=True)
+            safe_mask = mask_bool.clone()
+            safe_mask[:, 0] = torch.where(all_masked.squeeze(-1), True, safe_mask[:, 0])
+
+            neg_inf = torch.tensor(-1e8, device=logits.device, dtype=logits.dtype)
+            logits = torch.where(safe_mask, logits, neg_inf)
+
+        value = self.critic_head(next_hidden).squeeze(-1)
+        return logits, value, next_hidden
+
+    def act_rnn(
+        self,
+        spatial: Union[np.ndarray, torch.Tensor],
+        proprio: Union[np.ndarray, torch.Tensor],
+        action_mask: Optional[Union[np.ndarray, torch.Tensor]] = None,
+        hidden_state: Optional[torch.Tensor] = None,
+        deterministic: bool = False
+    ) -> Tuple[Union[int, np.ndarray], np.ndarray, np.ndarray, torch.Tensor]:
+        """
+        Single-step rollout action selection with recurrent memory update.
+        """
+        device = next(self.parameters()).device
+        s_tensor, p_tensor, m_tensor = self._prepare_inputs(spatial, proprio, action_mask, device)
+
+        if hidden_state is not None:
+            hidden_state = hidden_state.to(device)
+
+        with torch.no_grad():
+            logits, value, next_hidden = self.forward_rnn(s_tensor, p_tensor, m_tensor, hidden_state)
+            dist = Categorical(logits=logits)
+
+            if deterministic:
+                action = torch.argmax(logits, dim=-1)
+            else:
+                action = dist.sample()
+
+            log_prob = dist.log_prob(action)
+
+        act_res = action.cpu().numpy()
+        logp_res = log_prob.cpu().numpy()
+        val_res = value.cpu().numpy()
+
+        if act_res.size == 1:
+            return int(act_res.item()), float(logp_res.item()), float(val_res.item()), next_hidden
+        return act_res, logp_res, val_res, next_hidden
+
+    def evaluate_rnn_actions(
+        self,
+        spatial: torch.Tensor,
+        proprio: torch.Tensor,
+        actions: torch.Tensor,
+        action_mask: Optional[torch.Tensor] = None,
+        hidden_state: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Evaluates batch transitions for recurrent PPO updates."""
+        logits, values, next_hidden = self.forward_rnn(spatial, proprio, action_mask, hidden_state)
+        dist = Categorical(logits=logits)
+
+        log_probs = dist.log_prob(actions)
+        dist_entropy = dist.entropy()
+
+        return values, log_probs, dist_entropy, next_hidden
