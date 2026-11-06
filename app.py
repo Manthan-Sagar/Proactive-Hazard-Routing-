@@ -60,12 +60,19 @@ with st.sidebar:
     if floor_choice == "ground":
         fire_preset = st.selectbox(
             "Chokepoint Preset",
-            ["Origin A (Corridor Chokepoint: 250, 580)", "Origin B (West Wing: 175, 175)", "Custom"]
+            [
+                "Origin A (Corridor Chokepoint: 250, 580)",
+                "Origin B (Peripheral Room: 90, 175)",
+                "Origin C (Off-Corridor: 270, 525)",
+                "Custom"
+            ]
         )
         if "Origin A" in fire_preset:
             fx, fy = locs.origin_a_chokepoint
         elif "Origin B" in fire_preset:
-            fx, fy = locs.origin_b_west
+            fx, fy = locs.origin_b_peripheral
+        elif "Origin C" in fire_preset:
+            fx, fy = locs.origin_c_offcorridor
         else:
             fx = st.number_input("Fire X", 0, 500, 250)
             fy = st.number_input("Fire Y", 0, 800, 580)
