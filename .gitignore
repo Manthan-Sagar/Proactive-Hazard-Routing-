@@ -1,8 +1,26 @@
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
-.DS_Store
-*.mp4
-*.csv
-*.png
+*.pyd
 
+# Testing & code coverage caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Operating system & Editor artifacts
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+.vscode/
+.idea/
+
+# Local temporary and scratch directories
+scratch/
+tmp/
+temp/
