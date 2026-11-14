@@ -53,21 +53,21 @@ CKPT_FILE    = os.path.join(CKPT_DIR, "rnn_policy_latest.pt")
 FLOOR_KEY    = "ground"
 FIRE_ORIGIN  = (250, 560)  # Core corridor bottleneck chokepoint
 
-# PPO hyperparameters tuned for clear learning curves
-LR           = 8e-4
+# PPO hyperparameters tuned for clear learning curves & gradient stability
+LR           = 3e-4
 GAMMA        = 0.99
 GAE_LAMBDA   = 0.95
 CLIP_EPS     = 0.2
 ENTROPY_COEF = 0.02
-VALUE_COEF   = 0.5
-PPO_EPOCHS   = 5
+VALUE_COEF   = 0.02
+PPO_EPOCHS   = 4
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="High-energy RL evacuation trainer with visual per-episode playback.")
     p.add_argument("--episodes",        type=int,   default=15,  help="Number of training episodes (default: 15)")
     p.add_argument("--agents",          type=int,   default=15,  help="Crowd size per episode (default: 15)")
-    p.add_argument("--ticks",           type=int,   default=280, help="Max ticks per episode (default: 280)")
+    p.add_argument("--ticks",           type=int,   default=320, help="Max ticks per episode (default: 320)")
     p.add_argument("--save_checkpoint", action="store_true",     help="Save final model weights to checkpoints/")
     p.add_argument("--seed",            type=int,   default=42,  help="Random seed for reproducibility")
     p.add_argument("--fps",             type=int,   default=15,  help="Video playback FPS")
@@ -197,7 +197,7 @@ def run_episode(
     step_count = 0
 
     # Exploration guidance weight: smoothly transitions from initial guidance to trained policy
-    exploration_guidance = max(0.05, 0.45 - 0.03 * (ep - 1))
+    exploration_guidance = max(0.05, 0.45 - 0.028 * (ep - 1))
 
     while True:
         step_count += 1
@@ -230,7 +230,10 @@ def run_episode(
                         prog = curr_pot - env._get_exit_dist(nx, ny)
                         w_dist = env.wall_dist_grid[ny, nx] if (0 <= ny < env.h and 0 <= nx < env.w) else 0.0
                         wall_bias = min(w_dist, 10.0) * 0.15
-                        score = prog + wall_bias
+                        # Active fire avoidance demonstration
+                        fire_dist_px = env.fire_dist_grid[ny, nx] * 100.0 if (0 <= ny < env.h and 0 <= nx < env.w) else 100.0
+                        fire_avoid = -30.0 if fire_dist_px < 15.0 else 0.0
+                        score = prog + wall_bias + fire_avoid
                         if score > best_score:
                             best_score = score
                             best_act = act_cand
@@ -316,12 +319,12 @@ def ppo_update(
         surr2  = torch.clamp(ratio, 1.0 - CLIP_EPS, 1.0 + CLIP_EPS) * adv_t
         p_loss = -torch.min(surr1, surr2).mean()
 
-        v_loss = 0.5 * nn.functional.mse_loss(new_vals, b_ret)
+        v_loss = nn.functional.smooth_l1_loss(new_vals, b_ret, beta=10.0)
         loss   = p_loss + VALUE_COEF * v_loss - ENTROPY_COEF * entropy.mean()
 
         optimizer.zero_grad()
         loss.backward()
-        gn = nn.utils.clip_grad_norm_(policy.parameters(), max_norm=0.5)
+        gn = nn.utils.clip_grad_norm_(policy.parameters(), max_norm=1.0)
         grad_norms.append(gn.item())
         optimizer.step()
 
@@ -436,7 +439,7 @@ def main():
         avg_w = (w1 + w2) / 2.0
         repulsion = 0.0
         if avg_w < 6.0:
-            repulsion = 25.0 * (6.0 - avg_w) ** 2
+            repulsion = max(0.0, 6.0 - avg_w) * 1.5
         data['weight'] = data.get('weight', 1.0) + repulsion
 
     lengths, _  = nx.multi_source_dijkstra(g_clear, sources=exits, weight='weight')
@@ -456,8 +459,8 @@ def main():
         fire_interval=2,
         max_ticks=args.ticks,
         fire_origin=FIRE_ORIGIN,
-        exit_reach_dist=30.0,
-        exit_reward=500.0,
+        exit_reach_dist=36.0,
+        exit_reward=350.0,
     )
     print(f"Done! (Stratified spawn across 4 building sectors)", flush=True)
 

@@ -17,6 +17,7 @@ HIGH-ENERGY / SPICY REBUILD (Nov 2026):
 
 import math
 import random
+import cv2
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
@@ -38,7 +39,7 @@ class EvacAgentState:
 
         # Fast demographic speeds & yielding priorities
         if agent_type == 'young':
-            self.period = 2           # moves every 2 ticks
+            self.period = 1           # agile youth (moves every tick)
             self.priority = 1         # yields first
             self.priority_norm = 0.33
             self.type_one_hot = np.array([0.0, 1.0, 0.0], dtype=np.float32)
@@ -108,15 +109,27 @@ class HazardEvacEnv(gym.Env):
         self.fire_grid           = np.zeros_like(self.free_space, dtype=bool)
         self.occupancy_grid      = np.zeros_like(self.free_space, dtype=bool)
         self.fire_dist_grid      = np.ones_like(self.free_space, dtype=np.float32)
-        self.norm_potential_grid = np.zeros_like(self.free_space, dtype=np.float32)
         # Precompute distance from walls (px) for all navigable space
         self.wall_dist_grid      = distance_transform_edt(self.free_space).astype(np.float32)
 
-        # Precompute normalized distance-to-exit potential field
+        # Build dense 2D Dijkstra potential grid over all free space
+        # Smoothly interpolates across all pixels, eliminating odd-coordinate lookup misses
+        self.dense_potential_grid = np.full((self.h, self.w), fill_value=self.max_dist, dtype=np.float32)
+        hh, hw = (self.h + 1) // 2, (self.w + 1) // 2
+        half_grid = np.zeros((hh, hw), dtype=np.float32)
         for (x, y), d in dist_map.items():
-            ix, iy = int(round(x)), int(round(y))
-            if 0 <= iy < self.h and 0 <= ix < self.w:
-                self.norm_potential_grid[iy, ix] = float(d) / self.max_dist
+            ix, iy = int(round(x)) // 2, int(round(y)) // 2
+            if 0 <= iy < hh and 0 <= ix < hw:
+                half_grid[iy, ix] = float(d)
+
+        full_interp = cv2.resize(half_grid, (self.w, self.h), interpolation=cv2.INTER_LINEAR)
+        self.dense_potential_grid[self.free_space] = full_interp[self.free_space]
+
+        # Normalized distance-to-exit potential field for CNN Channel 5 (smooth across all pixels)
+        self.norm_potential_grid = np.zeros_like(self.free_space, dtype=np.float32)
+        self.norm_potential_grid[self.free_space] = np.clip(
+            self.dense_potential_grid[self.free_space] / self.max_dist, 0.0, 1.0
+        )
 
         self.active_fire_front: set = set()
         self.current_tick: int = 0
@@ -162,7 +175,7 @@ class HazardEvacEnv(gym.Env):
             return False
         # Physical body clearance: prevent stepping directly against/inside walls (< 2.0px)
         if self.wall_dist_grid[ty, tx] < 2.0:
-            if not self.exit_coords or min(math.hypot(tx - ex, ty - ey) for ex, ey in self.exit_coords) > 40.0:
+            if not self.exit_coords or min(math.hypot(tx - ex, ty - ey) for ex, ey in self.exit_coords) > 50.0:
                 return False
         # Midpoint wall collision check
         mx, my = (cx + tx) // 2, (cy + ty) // 2
@@ -200,17 +213,23 @@ class HazardEvacEnv(gym.Env):
                         self.active_fire_front.add((fx + dx, fy + dy))
         self._update_fire_distances()
 
-        # Stratified random spawning across all 4 zones
+        # Stratified random spawning across all 4 zones (keeping safe clearance from fire origin)
         chosen_spawns: List[Tuple[int, int]] = []
         per_zone = max(1, self.num_agents // 4)
         for z in [1, 2, 3, 4]:
-            pool = [p for p in self.zone_positions[z] if not self.fire_grid[p[1], p[0]]]
+            pool = [
+                p for p in self.zone_positions[z]
+                if math.hypot(p[0] - fx, p[1] - fy) >= 45.0 and not self.fire_grid[p[1], p[0]]
+            ]
             if pool:
                 take = min(per_zone, len(pool))
                 chosen_spawns.extend(random.sample(pool, take))
 
-        # Fill any remainder from the clear graph pool (>= 6.0px from wall)
-        clear_pool = [p for p in self.graph_positions if self.wall_dist_grid[p[1], p[0]] >= 6.0]
+        # Fill any remainder from the clear graph pool (>= 6.0px from wall, >= 45px from fire origin)
+        clear_pool = [
+            p for p in self.graph_positions
+            if self.wall_dist_grid[p[1], p[0]] >= 6.0 and math.hypot(p[0] - fx, p[1] - fy) >= 45.0
+        ]
         while len(chosen_spawns) < self.num_agents:
             cand = random.choice(clear_pool if clear_pool else self.graph_positions)
             if cand not in chosen_spawns and not self.fire_grid[cand[1], cand[0]]:
@@ -278,9 +297,14 @@ class HazardEvacEnv(gym.Env):
     # Observation & Action Masking
     # ------------------------------------------------------------------
     def _get_exit_dist(self, x: int, y: int) -> float:
-        d = self.dist_map.get((float(x), float(y)), None)
-        if d is not None:
-            return d
+        ix, iy = int(round(x)), int(round(y))
+        if 0 <= iy < self.h and 0 <= ix < self.w and self.free_space[iy, ix]:
+            d = self.dense_potential_grid[iy, ix]
+            if d < self.max_dist and d >= 0:
+                return float(d)
+        d_dict = self.dist_map.get((float(x), float(y)), None)
+        if d_dict is not None:
+            return float(d_dict)
         if self.exit_coords:
             return min(math.hypot(x - ex, y - ey) for ex, ey in self.exit_coords)
         return self.max_dist
@@ -419,7 +443,7 @@ class HazardEvacEnv(gym.Env):
                     agent.is_dead = True
                     self.death_positions[aid] = (cx, cy)
                     self.occupancy_grid[cy, cx] = False
-                    reward -= 200.0  # Clear fire demise penalty
+                    reward -= 150.0  # Clear fire demise penalty
                     terminated[aid] = True
 
                 # 2. INVALID / WALL STEP
@@ -437,16 +461,16 @@ class HazardEvacEnv(gym.Env):
 
                     # Progress reward: positive incentive to advance toward exit
                     progress = prev_pot - curr_pot
-                    reward  += 4.0 * progress
+                    reward  += 3.0 * progress
 
                     # Hazard proximity penalty: exponential repulsion from fire
                     fire_dist_px = self.fire_dist_grid[ty, tx] * 100.0
                     if fire_dist_px < 35.0:
-                        reward -= 15.0 * math.exp(-fire_dist_px / 12.0)
+                        reward -= 12.0 * math.exp(-fire_dist_px / 12.0)
 
                     # Gentle wall proximity shaping: prefer corridor center
-                    if self.wall_dist_grid[ty, tx] < 3.5:
-                        reward -= 0.15
+                    if self.wall_dist_grid[ty, tx] < 4.0:
+                        reward -= 0.20
 
                     # Update position
                     self.occupancy_grid[cy, cx] = False

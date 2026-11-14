@@ -128,7 +128,7 @@ class ActorCriticNetwork(nn.Module):
             neg_inf = torch.tensor(-1e8, device=logits.device, dtype=logits.dtype)
             logits = torch.where(safe_mask, logits, neg_inf)
 
-        value = self.critic_head(latent).squeeze(-1)
+        value = self.critic_head(latent.detach()).squeeze(-1)
         return logits, value
 
     def act(
@@ -242,7 +242,8 @@ class ActorCriticRNN(ActorCriticNetwork):
             neg_inf = torch.tensor(-1e8, device=logits.device, dtype=logits.dtype)
             logits = torch.where(safe_mask, logits, neg_inf)
 
-        value = self.critic_head(next_hidden).squeeze(-1)
+        # Critic estimates state value from detached recurrent state, isolating the shared trunk from critic regression explosions
+        value = self.critic_head(next_hidden.detach()).squeeze(-1)
         return logits, value, next_hidden
 
     def act_rnn(

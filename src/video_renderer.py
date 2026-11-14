@@ -67,9 +67,7 @@ def draw_simulation_frame(
     elif base_img.shape[2] == 4:
         frame = cv2.cvtColor(base_img, cv2.COLOR_RGBA2BGR)
     else:
-        frame = np.ascontiguousarray(base_img[:, :, ::-1] if base_img.dtype == np.uint8 else base_img.copy())
-        # Ensure RGB→BGR if loaded with PIL
-        frame = frame.copy()
+        frame = base_img.copy()
 
     H, W = frame.shape[:2]
 
