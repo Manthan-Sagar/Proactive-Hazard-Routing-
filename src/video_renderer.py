@@ -32,19 +32,18 @@ from src.rl_model import ActorCriticNetwork, ActorCriticRNN
 # Color palette  (all BGR for OpenCV)
 # ---------------------------------------------------------------------------
 COLORS = {
-    'adult':   (0,   220,  60),    # Bright green
-    'young':   (230, 190,   0),    # Cyan-yellow (high contrast on white BG)
-    'elderly': (0,   140, 255),    # Orange
-    'dead':    (0,   0,   220),    # Red
-    'exit':    (0,   200,   0),    # Green circle
-    'fire':    (20,   40, 240),    # Orange-red
+    'adult':   (0,   240,  60),    # Bright lime green
+    'young':   (255, 210,   0),    # Vivid cyan
+    'elderly': (0,   140, 255),    # High-vis bright orange
+    'dead':    (0,   0,   255),    # Vivid red
+    'exit':    (0,   220,   0),    # Emerald green
+    'fire':    (20,   30, 255),    # Flame orange-red
     'smoke':   np.array([80, 60, 20], dtype=np.float32),
 }
 
 BANNER_H  = 44   # top info bar height (px)
 LEGEND_H  = 34   # bottom legend bar height (px)
 DOT_R     = 7    # agent dot radius
-X_HALF    = 10   # half-size of death X marker
 TRAIL_LEN = 60   # max trail history shown
 
 
@@ -115,17 +114,23 @@ def draw_simulation_frame(
                 cv2.line(frame, tail[k], tail[k + 1], seg_color, 1, cv2.LINE_AA)
 
     # ------------------------------------------------------------------
-    # 5. Persistent death markers (large red X at the spot agent burned)
+    # 5. Persistent death markers (high-contrast shield + red skull cross)
+    # Guaranteed to pop clearly on top of fire and smoke
     # ------------------------------------------------------------------
     for aid, (dx, dy) in env.death_positions.items():
         cx, cy = int(dx), int(dy)
-        # Dark background circle
-        cv2.circle(frame, (cx, cy), X_HALF + 2, (40, 40, 40), -1)
-        # Red X
-        cv2.line(frame, (cx - X_HALF, cy - X_HALF), (cx + X_HALF, cy + X_HALF), COLORS['dead'], 3)
-        cv2.line(frame, (cx - X_HALF, cy + X_HALF), (cx + X_HALF, cy - X_HALF), COLORS['dead'], 3)
-        # White center dot
-        cv2.circle(frame, (cx, cy), 2, (255, 255, 255), -1)
+        # 1. Solid white outer shield
+        cv2.circle(frame, (cx, cy), 13, (255, 255, 255), -1)
+        # 2. Pitch black inner circular badge
+        cv2.circle(frame, (cx, cy), 10, (12, 12, 12), -1)
+        # 3. Vivid red anti-aliased cross
+        cv2.line(frame, (cx - 7, cy - 7), (cx + 7, cy + 7), COLORS['dead'], 3, cv2.LINE_AA)
+        cv2.line(frame, (cx - 7, cy + 7), (cx + 7, cy - 7), COLORS['dead'], 3, cv2.LINE_AA)
+        # 4. Center yellow core dot
+        cv2.circle(frame, (cx, cy), 2, (0, 255, 255), -1)
+        # 5. Text tag above marker
+        cv2.putText(frame, "DEAD", (cx - 14, cy - 15),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.32, (0, 0, 255), 1, cv2.LINE_AA)
 
     # ------------------------------------------------------------------
     # 6. Live agents (large dot + white border ring)

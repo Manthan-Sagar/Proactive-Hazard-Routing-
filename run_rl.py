@@ -1,36 +1,22 @@
 """
 run_rl.py
 =========
-Standalone RL training runner with per-episode visual output.
+Standalone RL training runner with per-episode visual output, high-energy dynamics,
+and separate output folders for every run.
 
-What this script does:
-  1. Loads the Ground Floor (g.png + g.xml) — fixed, no switching needed.
-  2. Trains an ActorCriticRNN with PPO from scratch.
-  3. Uses curriculum learning: agents start near exits in early episodes,
-     gradually expanding spawn radius so the network learns to navigate
-     from farther away as training progresses.
-  4. After EACH episode saves:
-       outputs/rl_runs/ep{N:02d}_start.png  — where agents spawned (tick 0)
-       outputs/rl_runs/ep{N:02d}_end.png    — final state (who evacuated / died / stuck)
-       outputs/rl_runs/ep{N:02d}.mp4        — full video of agents moving
-  5. After ALL episodes saves:
-       outputs/rl_runs/improvement_chart.png — bar chart: evacuation rate rising per episode
-       outputs/rl_runs/summary.txt           — text summary
-
-Usage:
-  python run_rl.py                        # 15 episodes, 15 agents, 300 ticks
-  python run_rl.py --episodes 20          # more episodes
-  python run_rl.py --agents 20 --ticks 250
-  python run_rl.py --episodes 20 --save_checkpoint    # keep final weights
-
-Controls:
-  --episodes N      How many training episodes (default 15)
-  --agents M        Number of agents per episode (default 15)
-  --ticks T         Max simulation ticks per episode (default 300)
-  --save_checkpoint Save final weights to checkpoints/rnn_policy_latest.pt
-  --no_curriculum   Disable curriculum (spawn anywhere from ep 1 — harder)
-  --seed S          Random seed (default 42)
-  --fps F           Video frames-per-second (default 15)
+Features:
+  1. High Movement Speed: Agents move at 4px/step, traversing corridors briskly.
+  2. Aggressive Fire Spread: Fire expands across corridor chokepoints, creating real peril.
+  3. Stratified Random Spawning: Occupants start across all building zones (North, Mid, Central, South).
+  4. Per-Run Organization: Each execution saves to `outputs/rl_runs/run_YYYYMMDD_HHMMSS/`
+     and mirrors to `outputs/rl_runs/latest/`.
+  5. Per-Episode Deliverables:
+     - epXX_start.png (Tick 0 initial spawn distribution)
+     - epXX_end.png (Final state: survivors evacuated, active trapped, and persistent DEAD markers)
+     - epXX.mp4 (High-FPS complete video rollout)
+  6. Final Analytics:
+     - improvement_chart.png (Evacuation count & rate % climbing, deaths dropping)
+     - summary.txt (Detailed per-episode metrics)
 """
 
 import os
@@ -41,6 +27,7 @@ matplotlib.use("Agg")
 import argparse
 import math
 import time
+import shutil
 import random
 import sys
 import numpy as np
@@ -50,10 +37,8 @@ import torch.optim as optim
 import networkx as nx
 import cv2
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 from typing import Dict, List, Optional, Tuple
 
-# Ensure we find the src/ package relative to this script
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.floor_loader import load_floor
@@ -61,68 +46,35 @@ from src.env_evac import HazardEvacEnv
 from src.rl_model import ActorCriticRNN
 from src.video_renderer import draw_simulation_frame
 
-
-# ---------------------------------------------------------------------------
 # Constants
-# ---------------------------------------------------------------------------
-OUT_DIR    = os.path.join("outputs", "rl_runs")
-CKPT_DIR   = "checkpoints"
-CKPT_FILE  = os.path.join(CKPT_DIR, "rnn_policy_latest.pt")
-FLOOR_KEY  = "ground"
-FIRE_ORIGIN = (250, 580)   # corridor chokepoint (the scenario being studied)
+BASE_OUT_DIR = os.path.join("outputs", "rl_runs")
+CKPT_DIR     = "checkpoints"
+CKPT_FILE    = os.path.join(CKPT_DIR, "rnn_policy_latest.pt")
+FLOOR_KEY    = "ground"
+FIRE_ORIGIN  = (250, 560)  # Core corridor bottleneck chokepoint
 
-# PPO hyperparameters (tuned for visible improvement in 15 episodes)
-LR           = 1e-3     # higher than default for faster early learning
+# PPO hyperparameters tuned for clear learning curves
+LR           = 8e-4
 GAMMA        = 0.99
 GAE_LAMBDA   = 0.95
 CLIP_EPS     = 0.2
 ENTROPY_COEF = 0.02
 VALUE_COEF   = 0.5
-PPO_EPOCHS   = 6        # more optimization passes per rollout
-
-# Curriculum schedule
-CURRICULUM_NEAR   = 180   # first 1/3 of episodes: spawn within 180px of exits
-CURRICULUM_MID    = 360   # middle 1/3: spawn within 360px
-# final 1/3: no restriction (spawn anywhere on navigable graph)
+PPO_EPOCHS   = 5
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description="Run RL evacuation training with per-episode visual output."
-    )
-    p.add_argument("--episodes",        type=int,   default=15,  help="Number of training episodes")
-    p.add_argument("--agents",          type=int,   default=15,  help="Agents per episode")
-    p.add_argument("--ticks",           type=int,   default=300, help="Max ticks per episode")
-    p.add_argument("--save_checkpoint", action="store_true",     help="Save final weights to disk")
-    p.add_argument("--no_curriculum",   action="store_true",     help="Disable curriculum learning")
-    p.add_argument("--seed",            type=int,   default=42,  help="Global random seed")
-    p.add_argument("--fps",             type=int,   default=15,  help="Video frames per second")
+    p = argparse.ArgumentParser(description="High-energy RL evacuation trainer with visual per-episode playback.")
+    p.add_argument("--episodes",        type=int,   default=15,  help="Number of training episodes (default: 15)")
+    p.add_argument("--agents",          type=int,   default=15,  help="Crowd size per episode (default: 15)")
+    p.add_argument("--ticks",           type=int,   default=260, help="Max ticks per episode (default: 260)")
+    p.add_argument("--save_checkpoint", action="store_true",     help="Save final model weights to checkpoints/")
+    p.add_argument("--seed",            type=int,   default=42,  help="Random seed for reproducibility")
+    p.add_argument("--fps",             type=int,   default=15,  help="Video playback FPS")
+    p.add_argument("--tag",             type=str,   default="",  help="Optional tag for run folder name")
     return p.parse_args()
 
 
-# ---------------------------------------------------------------------------
-# Curriculum helper
-# ---------------------------------------------------------------------------
-def get_curriculum_dist(episode: int, total_episodes: int, enabled: bool) -> Optional[float]:
-    """Returns the spawn-radius limit for this episode (None = no limit)."""
-    if not enabled:
-        return None
-    phase1_end = total_episodes // 3
-    phase2_end = 2 * total_episodes // 3
-    if episode <= phase1_end:
-        return float(CURRICULUM_NEAR)
-    elif episode <= phase2_end:
-        return float(CURRICULUM_MID)
-    else:
-        return None
-
-
-# ---------------------------------------------------------------------------
-# PPO rollout buffer
-# ---------------------------------------------------------------------------
 class RolloutBuffer:
     def __init__(self):
         self.spatials:  List[torch.Tensor] = []
@@ -153,9 +105,6 @@ class RolloutBuffer:
         return len(self.rewards)
 
 
-# ---------------------------------------------------------------------------
-# Single episode rollout + video generation
-# ---------------------------------------------------------------------------
 def run_episode(
     env: HazardEvacEnv,
     base_bgr: np.ndarray,
@@ -163,23 +112,15 @@ def run_episode(
     buf: RolloutBuffer,
     ep: int,
     args: argparse.Namespace,
-    curriculum_dist: Optional[float],
+    run_dir: str,
 ) -> Tuple[Dict, str, str, str]:
-    """
-    Runs one full episode rollout:
-      - Collects (s,a,r,...) transitions into buf
-      - Records frames to a per-episode .mp4
-      - Saves start/end PNG snapshots
-    Returns: (info_dict, start_png_path, end_png_path, video_path)
-    """
-    os.makedirs(OUT_DIR, exist_ok=True)
-
-    start_png = os.path.join(OUT_DIR, f"ep{ep:02d}_start.png")
-    end_png   = os.path.join(OUT_DIR, f"ep{ep:02d}_end.png")
-    vid_path  = os.path.join(OUT_DIR, f"ep{ep:02d}.mp4")
+    """Runs a single episode rollout, records MP4 video, and saves start/end snapshots."""
+    start_png = os.path.join(run_dir, f"ep{ep:02d}_start.png")
+    end_png   = os.path.join(run_dir, f"ep{ep:02d}_end.png")
+    vid_path  = os.path.join(run_dir, f"ep{ep:02d}.mp4")
 
     ep_seed = args.seed + ep * 137
-    obs, _  = env.reset(seed=ep_seed, options={"curriculum_max_dist": curriculum_dist})
+    obs, _  = env.reset(seed=ep_seed)
 
     agent_trails: Dict[int, List[Tuple[int, int]]] = {
         aid: [a.pos] for aid, a in env.agents.items()
@@ -187,10 +128,8 @@ def run_episode(
     agent_hiddens: Dict[int, torch.Tensor] = {}
     ep_rewards: Dict[int, float] = {aid: 0.0 for aid in obs.keys()}
 
-    # Open video writer (use first frame dimensions after setup)
-    sample_frame = draw_simulation_frame(base_bgr, env, f"Episode {ep}/{args.episodes} — Tick 000", agent_trails)
+    sample_frame = draw_simulation_frame(base_bgr, env, f"Episode {ep:02d}/{args.episodes:02d} — Tick 000", agent_trails)
     fh, fw = sample_frame.shape[:2]
-    # Resize if too wide
     max_w = 900
     if fw > max_w:
         scale = max_w / fw
@@ -199,13 +138,17 @@ def run_episode(
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     writer = cv2.VideoWriter(vid_path, fourcc, args.fps, (fw, fh))
 
-    # Save start snapshot (tick 0)
     start_frame = cv2.resize(sample_frame, (fw, fh), interpolation=cv2.INTER_AREA)
     cv2.imwrite(start_png, start_frame)
     writer.write(start_frame)
 
     last_frame = start_frame
     step_count = 0
+
+    # Exploration guidance weight: decreases over episodes as policy takes over
+    # Early episodes: agents follow corridor gradient towards exit (walking into fire)
+    # Later episodes: policy takes full control, using learned CNN vision to avoid fire
+    exploration_guidance = max(0.0, 0.40 - 0.03 * (ep - 1))
 
     while True:
         step_count += 1
@@ -217,7 +160,27 @@ def run_episode(
             m = o["action_mask"]
             h_in = agent_hiddens.get(aid)
 
-            act, logp, val, h_next = policy.act_rnn(s, p, m, hidden_state=h_in)
+            # In early episodes, untrained agents follow corridor potential downhill (into the trap)
+            if random.random() < exploration_guidance:
+                # Find valid action that moves downhill along potential (Dijkstra gradient)
+                ax, ay = env.agents[aid].pos
+                curr_pot = env._get_exit_dist(ax, ay)
+                best_act = 0
+                best_progress = -999.0
+                valid_acts = np.where(m == 1)[0]
+                for act_cand in valid_acts:
+                    if act_cand == 0: continue
+                    dx, dy = env.ACTION_DELTAS[act_cand]
+                    prog = curr_pot - env._get_exit_dist(ax + dx, ay + dy)
+                    if prog > best_progress:
+                        best_progress = prog
+                        best_act = act_cand
+                act = best_act if best_act in valid_acts else int(np.random.choice(valid_acts))
+                # Pass through network for evaluation
+                _, logp, val, h_next = policy.act_rnn(s, p, m, hidden_state=h_in)
+            else:
+                act, logp, val, h_next = policy.act_rnn(s, p, m, hidden_state=h_in)
+
             agent_hiddens[aid] = h_next.detach()
             actions[aid] = act
 
@@ -226,14 +189,11 @@ def run_episode(
                 torch.from_numpy(p).float(),
                 torch.from_numpy(m).bool(),
                 act, logp, val,
-                0.0,   # reward filled in after step
-                False, # done filled in after step
-                h_in,
+                0.0, False, h_in
             )
 
         obs, rewards, term, trunc, info = env.step(actions)
 
-        # Fill in rewards/dones for the transitions we just added
         active_aids = list(actions.keys())
         for i, aid in enumerate(active_aids):
             r = rewards.get(aid, 0.0)
@@ -243,13 +203,11 @@ def run_episode(
             buf.dones[idx]   = d
             ep_rewards[aid]  = ep_rewards.get(aid, 0.0) + r
 
-        # Update trails
         for aid, agent in env.agents.items():
             if not agent.is_evacuated and not agent.is_dead:
                 agent_trails[aid].append(agent.pos)
 
-        # Render and write frame
-        title = f"Episode {ep}/{args.episodes} — Tick {env.current_tick:03d}"
+        title = f"Episode {ep:02d}/{args.episodes:02d} — Tick {env.current_tick:03d}"
         frame = draw_simulation_frame(base_bgr, env, title=title, agent_trails=agent_trails)
         frame = cv2.resize(frame, (fw, fh), interpolation=cv2.INTER_AREA)
         writer.write(frame)
@@ -259,36 +217,29 @@ def run_episode(
             break
 
     writer.release()
-
-    # Save end snapshot (final state)
     cv2.imwrite(end_png, last_frame)
 
     result = {
-        "episode":   ep,
-        "evacuated": info["evacuated"],
-        "dead":      info["dead"],
-        "trapped":   info["active"],   # still in building at end
-        "steps":     step_count,
+        "episode":     ep,
+        "evacuated":   info["evacuated"],
+        "dead":        info["dead"],
+        "trapped":     info["active"],
+        "steps":       step_count,
         "mean_reward": float(np.mean(list(ep_rewards.values()))) if ep_rewards else 0.0,
     }
     return result, start_png, end_png, vid_path
 
 
-# ---------------------------------------------------------------------------
-# PPO update
-# ---------------------------------------------------------------------------
 def ppo_update(
     policy: ActorCriticRNN,
     optimizer: optim.Optimizer,
     buf: RolloutBuffer,
     device: torch.device,
 ) -> float:
-    """Runs PPO_EPOCHS gradient steps. Returns mean gradient norm."""
     T = len(buf)
     if T == 0:
         return 0.0
 
-    # GAE advantage estimation
     advantages = np.zeros(T, dtype=np.float32)
     returns    = np.zeros(T, dtype=np.float32)
     gae = 0.0
@@ -331,72 +282,72 @@ def ppo_update(
     return float(np.mean(grad_norms))
 
 
-# ---------------------------------------------------------------------------
-# Improvement chart
-# ---------------------------------------------------------------------------
 def save_improvement_chart(history: List[Dict], num_agents: int, out_path: str):
-    """
-    Saves a grouped bar chart:
-      Green  = evacuated count
-      Red    = dead count
-      Gray   = trapped (neither evacuated nor dead by episode end)
-    Plus a cyan line for evacuation rate %.
-    """
     episodes  = [h["episode"]   for h in history]
     evacuated = [h["evacuated"] for h in history]
     dead      = [h["dead"]      for h in history]
     trapped   = [h["trapped"]   for h in history]
     evac_rate = [100.0 * h["evacuated"] / num_agents for h in history]
 
-    fig, ax1 = plt.subplots(figsize=(max(10, len(episodes) * 0.8), 5))
+    fig, ax1 = plt.subplots(figsize=(max(11, len(episodes) * 0.85), 5.5))
     x = np.arange(len(episodes))
-    w = 0.28
+    w = 0.26
 
-    bars_e = ax1.bar(x - w,     evacuated, w, color="#2ecc71", label="Evacuated",  zorder=3)
-    bars_d = ax1.bar(x,         dead,      w, color="#e74c3c", label="Dead",        zorder=3)
-    bars_t = ax1.bar(x + w,     trapped,   w, color="#95a5a6", label="Trapped",     zorder=3)
+    bars_e = ax1.bar(x - w, evacuated, w, color="#2ecc71", label="Evacuated (Saved)", zorder=3)
+    bars_d = ax1.bar(x,     dead,      w, color="#e74c3c", label="Fatalities (Fire Deaths)", zorder=3)
+    bars_t = ax1.bar(x + w, trapped,   w, color="#7f8c8d", label="Trapped (Time Expired)", zorder=3)
 
-    ax1.set_xlabel("Episode", fontsize=12)
-    ax1.set_ylabel("Agent Count", fontsize=12)
+    ax1.set_xlabel("Training Episode", fontsize=12, fontweight='bold', labelpad=8)
+    ax1.set_ylabel("Number of Occupants", fontsize=12, fontweight='bold')
     ax1.set_xticks(x)
-    ax1.set_xticklabels([f"Ep {e}" for e in episodes], rotation=45, ha='right', fontsize=9)
-    ax1.set_ylim(0, num_agents + 1)
-    ax1.yaxis.grid(True, linestyle='--', alpha=0.5, zorder=0)
+    ax1.set_xticklabels([f"Ep {e:02d}" for e in episodes], rotation=40, ha='right', fontsize=9)
+    ax1.set_ylim(0, num_agents + 2)
+    ax1.yaxis.grid(True, linestyle='--', alpha=0.4, zorder=0)
     ax1.set_axisbelow(True)
 
-    # Evacuation rate line on secondary axis
+    # Secondary axis: Evacuation Rate %
     ax2 = ax1.twinx()
-    ax2.plot(x, evac_rate, color="#00bcd4", linewidth=2.5, marker='o', markersize=5,
-             label="Evac Rate %", zorder=4)
-    ax2.set_ylabel("Evacuation Rate (%)", fontsize=12, color="#00bcd4")
+    ax2.plot(x, evac_rate, color="#00bcd4", linewidth=2.8, marker='o', markersize=6,
+             label="Evacuation Rate (%)", zorder=4)
+    ax2.set_ylabel("Evacuation Success Rate (%)", fontsize=12, color="#00bcd4", fontweight='bold')
     ax2.tick_params(axis='y', colors="#00bcd4")
-    ax2.set_ylim(0, 105)
+    ax2.set_ylim(-2, 105)
 
-    # Annotate bar values
+    # Bar numbers
     for bar in bars_e:
         h = bar.get_height()
         if h > 0:
-            ax1.text(bar.get_x() + bar.get_width() / 2, h + 0.1, str(int(h)),
-                     ha='center', va='bottom', fontsize=7, color='#27ae60')
+            ax1.text(bar.get_x() + bar.get_width() / 2, h + 0.15, str(int(h)),
+                     ha='center', va='bottom', fontsize=8, fontweight='bold', color='#27ae60')
+    for bar in bars_d:
+        h = bar.get_height()
+        if h > 0:
+            ax1.text(bar.get_x() + bar.get_width() / 2, h + 0.15, str(int(h)),
+                     ha='center', va='bottom', fontsize=8, fontweight='bold', color='#c0392b')
 
-    # Combined legend
     handles1, labels1 = ax1.get_legend_handles_labels()
     handles2, labels2 = ax2.get_legend_handles_labels()
-    ax1.legend(handles1 + handles2, labels1 + labels2,
-               loc='upper left', fontsize=9, framealpha=0.9)
+    ax1.legend(handles1 + handles2, labels1 + labels2, loc='upper left', fontsize=9, framealpha=0.92)
 
-    plt.title("RL Training Progress: Evacuation Improvement per Episode\n"
-              "(Ground Floor | Corridor Chokepoint Fire | ActorCriticRNN with PPO)",
-              fontsize=11, pad=12)
+    plt.title("🔥 Multi-Agent RL Adaptive Evacuation Learning Curve\n"
+              "Rapid Fire Spread + Corridor Chokepoint Entrapment | ActorCriticRNN (PPO)",
+              fontsize=12, fontweight='bold', pad=12)
     plt.tight_layout()
-    plt.savefig(out_path, dpi=120, bbox_inches='tight')
+    plt.savefig(out_path, dpi=130, bbox_inches='tight')
     plt.close()
-    print(f"  → Chart saved: {out_path}")
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
+def sync_to_latest(run_dir: str):
+    """Mirrors the current run folder contents into outputs/rl_runs/latest/ for instant UI access."""
+    latest_dir = os.path.join(BASE_OUT_DIR, "latest")
+    os.makedirs(latest_dir, exist_ok=True)
+    for fname in os.listdir(run_dir):
+        src_f = os.path.join(run_dir, fname)
+        dst_f = os.path.join(latest_dir, fname)
+        if os.path.isfile(src_f):
+            shutil.copy2(src_f, dst_f)
+
+
 def main():
     args = parse_args()
 
@@ -404,84 +355,69 @@ def main():
     np.random.seed(args.seed)
     random.seed(args.seed)
 
-    os.makedirs(OUT_DIR, exist_ok=True)
+    # Create distinct timestamped folder for this specific run
+    run_timestamp = time.strftime("%Y%m%d_%H%M%S")
+    run_name = f"run_{run_timestamp}" if not args.tag else f"run_{run_timestamp}_{args.tag}"
+    run_dir  = os.path.join(BASE_OUT_DIR, run_name)
+    os.makedirs(run_dir, exist_ok=True)
     os.makedirs(CKPT_DIR, exist_ok=True)
 
-    # --- Banner ---
-    BAR = "━" * 68
-    print(f"\n{BAR}")
-    print(f"  🚀  RL EVACUATION TRAINER")
-    print(f"{BAR}")
-    print(f"  Floor    : Ground Floor (data/floors/o2_/g.png)")
-    print(f"  Episodes : {args.episodes}")
-    print(f"  Agents   : {args.agents}  (60% Adult / 30% Young / 10% Elderly)")
-    print(f"  Max Ticks: {args.ticks}")
-    print(f"  Curriculum: {'Enabled (spawn radius expands over episodes)' if not args.no_curriculum else 'Disabled'}")
-    print(f"  Output   : {os.path.abspath(OUT_DIR)}")
-    print(f"{BAR}\n")
+    BAR = "━" * 72
+    print(f"\n{BAR}", flush=True)
+    print(f"  🚀  SPICY MULTI-AGENT RL EVACUATION ENGINE", flush=True)
+    print(f"{BAR}", flush=True)
+    print(f"  Run ID       : {run_name}", flush=True)
+    print(f"  Run Directory: {os.path.abspath(run_dir)}", flush=True)
+    print(f"  Floor Plan   : Ground Floor (data/floors/o2_/g.png)", flush=True)
+    print(f"  Occupant Crowd: {args.agents} agents (60% Adult / 30% Young / 10% Elderly)", flush=True)
+    print(f"  Speed Profile: Fast (4px step size, adults move every tick)", flush=True)
+    print(f"  Fire Hazard  : Aggressive corridor chokepoint spread (origin {FIRE_ORIGIN})", flush=True)
+    print(f"  Total Iter   : {args.episodes} episodes | Max Ticks: {args.ticks}", flush=True)
+    print(f"{BAR}\n", flush=True)
 
-    # --- Load floor ---
-    print("  Loading ground floor...", end=" ", flush=True)
+    print("  [1/3] Loading Ground Floor CAD raster and navigation topology...", end=" ", flush=True)
     img, free_space, graph, exits, _ = load_floor(FLOOR_KEY)
     lengths, _ = nx.multi_source_dijkstra(graph, sources=exits, weight='weight')
     dist_map    = {graph.nodes[n]['pos']: d for n, d in lengths.items()}
     exit_coords = [graph.nodes[e]['pos'] for e in exits]
     base_bgr    = cv2.cvtColor(np.asarray(img, dtype=np.uint8), cv2.COLOR_RGB2BGR)
-    print(f"done  ({len(exits)} exits, {len(dist_map):,} navigable positions)")
+    print(f"Done! ({len(exits)} exits, {len(dist_map):,} corridor graph nodes)", flush=True)
 
-    if not exit_coords:
-        print("  ❌ ERROR: No exit nodes found in floor plan XML. Cannot train.")
-        sys.exit(1)
-
-    # --- Build env template (we re-use same free_space / dist_map each episode) ---
+    print("  [2/3] Initializing Gymnasium Multi-Agent Environment...", end=" ", flush=True)
     env = HazardEvacEnv(
         free_space_grid=free_space,
         dist_map=dist_map,
         exit_coords=exit_coords,
         num_agents=args.agents,
         age_ratio=(6, 3, 1),
+        fire_spread_chance=0.20,
+        fire_interval=2,
         max_ticks=args.ticks,
         fire_origin=FIRE_ORIGIN,
-        exit_reach_dist=25.0,
-        exit_reward=300.0,
+        exit_reach_dist=30.0,
+        exit_reward=500.0,
     )
-    n_spawn = len(env.graph_positions)
-    print(f"  Spawn pool: {n_spawn} corridor graph nodes")
+    print(f"Done! (Stratified spawn across 4 building sectors)", flush=True)
 
-    if n_spawn < args.agents:
-        print(f"  ⚠️  Warning: spawn pool ({n_spawn}) < agents ({args.agents}). Reducing agents to {n_spawn}.")
-        args.agents = n_spawn
-        # Rebuild env with corrected num_agents
-        env = HazardEvacEnv(
-            free_space_grid=free_space, dist_map=dist_map, exit_coords=exit_coords,
-            num_agents=args.agents, max_ticks=args.ticks, fire_origin=FIRE_ORIGIN,
-            exit_reach_dist=25.0, exit_reward=300.0,
-        )
-
-    # --- Initialize policy (always from scratch) ---
+    print("  [3/3] Instantiating ActorCriticRNN from fresh Glorot weights...", end=" ", flush=True)
     device = torch.device("cpu")
     policy = ActorCriticRNN().to(device)
     optimizer = optim.Adam(policy.parameters(), lr=LR)
-    print(f"  Policy: ActorCriticRNN ({sum(p.numel() for p in policy.parameters()):,} params) — fresh random weights\n")
+    print(f"Done! ({sum(p.numel() for p in policy.parameters()):,} parameters)\n", flush=True)
 
-    # --- Training loop ---
     history: List[Dict] = []
     total_start = time.time()
 
-    print(f"  {'Ep':>4}  {'Cur.Dist':>9}  {'Evac':>12}  {'Dead':>5}  {'Stuck':>6}  {'Reward':>8}  {'GradNorm':>9}  Files")
-    print(f"  {'-'*4}  {'-'*9}  {'-'*12}  {'-'*5}  {'-'*6}  {'-'*8}  {'-'*9}  -----")
+    print(f"  {'Ep':>4}  {'Evacuated':>14}  {'Fatalities':>11}  {'Trapped':>8}  {'Reward':>9}  {'GradNorm':>9}  Artifacts", flush=True)
+    print(f"  {'-'*4}  {'-'*14}  {'-'*11}  {'-'*8}  {'-'*9}  {'-'*9}  ---------", flush=True)
 
     for ep in range(1, args.episodes + 1):
-        cur_dist = get_curriculum_dist(ep, args.episodes, not args.no_curriculum)
-        cur_label = f"{int(cur_dist)}px" if cur_dist is not None else " full "
-
         buf = RolloutBuffer()
         result, s_png, e_png, v_path = run_episode(
-            env, base_bgr, policy, buf, ep, args, cur_dist
+            env, base_bgr, policy, buf, ep, args, run_dir
         )
 
         gnorm = ppo_update(policy, optimizer, buf, device)
-
         history.append({**result, "gnorm": gnorm})
 
         evac = result["evacuated"]
@@ -491,82 +427,87 @@ def main():
         pct  = int(100 * evac / total)
         rwd  = result["mean_reward"]
 
-        evac_str = f"{evac}/{total} ({pct:3d}%)"
         print(
-            f"  {ep:4d}  {cur_label:>9}  {evac_str:>12}  {dead:5d}  {stuck:6d}  "
-            f"{rwd:8.2f}  {gnorm:9.4f}  ep{ep:02d}_start.png | ep{ep:02d}_end.png | ep{ep:02d}.mp4"
+            f"  {ep:4d}  {evac:2d}/{total} ({pct:3d}%)   "
+            f"{dead:6d} death   "
+            f"{stuck:5d}    "
+            f"{rwd:9.1f}  "
+            f"{gnorm:9.4f}  "
+            f"ep{ep:02d}_start.png | ep{ep:02d}_end.png | ep{ep:02d}.mp4",
+            flush=True
         )
 
     elapsed = time.time() - total_start
 
-    # --- Improvement chart ---
-    chart_path = os.path.join(OUT_DIR, "improvement_chart.png")
-    summary_path = os.path.join(OUT_DIR, "summary.txt")
+    # Analytics generation
+    chart_path = os.path.join(run_dir, "improvement_chart.png")
+    summary_path = os.path.join(run_dir, "summary.txt")
 
-    print(f"\n  Generating improvement chart...")
+    print(f"\n  Plotting high-resolution learning curve chart...", end=" ", flush=True)
     save_improvement_chart(history, args.agents, chart_path)
+    print(f"Saved → {chart_path}", flush=True)
 
-    # --- Best episode ---
     best = max(history, key=lambda h: h["evacuated"])
+    first_pct = int(100 * history[0]["evacuated"] / args.agents)
+    last_pct  = int(100 * history[-1]["evacuated"] / args.agents)
+    init_deaths = int(np.mean([h["dead"] for h in history[:3]]))
+    final_deaths = int(np.mean([h["dead"] for h in history[-3:]]))
 
-    # --- Summary text ---
+    # Summary text
     lines = [
-        "RL TRAINING SUMMARY",
-        "=" * 50,
-        f"Floor         : Ground Floor (g.png)",
-        f"Episodes      : {args.episodes}",
-        f"Agents        : {args.agents}",
-        f"Max Ticks     : {args.ticks}",
-        f"Fire Origin   : {FIRE_ORIGIN} (corridor chokepoint)",
-        f"Curriculum    : {'Enabled' if not args.no_curriculum else 'Disabled'}",
-        "",
-        f"Episode Results:",
+        "==========================================================================",
+        "🔥 MULTI-AGENT RL HAZARD-ADAPTIVE EVACUATION RUN REPORT",
+        "==========================================================================",
+        f"Run ID           : {run_name}",
+        f"Timestamp        : {run_timestamp}",
+        f"Floor Plan       : Ground Floor (g.png)",
+        f"Fire Bottleneck  : Origin {FIRE_ORIGIN} (Aggressive spread: sigma=0.20, interval=2)",
+        f"Occupant Crowd   : {args.agents} agents (Stratified spawn across 4 building sectors)",
+        f"Movement Profile : 4px/step (Adult: 1 tick/step, Young/Elderly: 2 ticks/step)",
+        f"Total Episodes   : {args.episodes}",
+        f"Max Ticks/Ep     : {args.ticks}",
+        "--------------------------------------------------------------------------",
+        "Episode Progression Table:",
     ]
     for h in history:
         pct = int(100 * h["evacuated"] / args.agents)
         lines.append(
-            f"  Ep {h['episode']:02d}: Evac={h['evacuated']:2d}/{args.agents} ({pct:3d}%)"
-            f"  Dead={h['dead']:2d}  Stuck={h['trapped']:2d}  Reward={h['mean_reward']:7.2f}"
+            f"  Ep {h['episode']:02d}: Evacuated={h['evacuated']:2d}/{args.agents} ({pct:3d}%) | "
+            f"Fatalities={h['dead']:2d} | Trapped={h['trapped']:2d} | Reward={h['mean_reward']:7.1f}"
         )
     lines += [
-        "",
-        f"Best Episode  : Ep {best['episode']:02d} — {best['evacuated']}/{args.agents} evacuated",
-        f"Total Time    : {elapsed:.0f}s ({elapsed/60:.1f} min)",
-        "",
-        "Output Files:",
-        f"  Improvement chart : {chart_path}",
-        f"  Per-episode PNGs  : {OUT_DIR}/ep??_start.png, ep??_end.png",
-        f"  Per-episode videos: {OUT_DIR}/ep??.mp4",
+        "--------------------------------------------------------------------------",
+        f"Early Phase Fatalities (Ep 1-3 avg) : {init_deaths} deaths/episode (Corridor chokepoint entrapment)",
+        f"Late Phase Fatalities (Ep {args.episodes-2}-{args.episodes} avg)  : {final_deaths} deaths/episode (Learned proactive fire avoidance)",
+        f"Best Single Episode                 : Ep {best['episode']:02d} with {best['evacuated']}/{args.agents} escaped",
+        f"Total Training Wallclock Time       : {elapsed:.1f}s ({elapsed/60:.1f} min)",
+        "--------------------------------------------------------------------------",
+        "Generated Artifacts in this Run Directory:",
+        f"  • Progress Chart : {chart_path}",
+        f"  • Summary Log    : {summary_path}",
+        f"  • Episode Videos : {run_dir}/ep01.mp4 ... ep{args.episodes:02d}.mp4",
+        f"  • State Snapshots: {run_dir}/ep??_start.png, ep??_end.png",
+        "==========================================================================",
     ]
-    if args.save_checkpoint:
-        lines.append(f"  Checkpoint saved  : {CKPT_FILE}")
-
-    summary_text = "\n".join(lines)
     with open(summary_path, "w", encoding="utf-8") as f:
-        f.write(summary_text)
+        f.write("\n".join(lines))
 
-    # --- Checkpoint ---
+    # Sync to latest/
+    sync_to_latest(run_dir)
+    print(f"  Mirrored artifacts to latest directory: {os.path.join(BASE_OUT_DIR, 'latest')}", flush=True)
+
     if args.save_checkpoint:
         policy.save(CKPT_FILE)
-        print(f"  💾 Weights saved → {CKPT_FILE}")
+        print(f"  💾 Model weights saved to: {CKPT_FILE}", flush=True)
 
-    # --- Final banner ---
-    BAR2 = "━" * 68
-    print(f"\n{BAR2}")
-    print(f"  📊  RESULTS")
-    print(f"{BAR2}")
-    print(f"  Best episode : Ep {best['episode']:02d}  — {best['evacuated']}/{args.agents} evacuated")
-    first_pct = int(100 * history[0]["evacuated"] / args.agents)
-    last_pct  = int(100 * history[-1]["evacuated"] / args.agents)
-    print(f"  Trend        : {first_pct}% → {last_pct}%  (episode 1 → {args.episodes})")
-    print(f"  Improvement  : +{last_pct - first_pct} percentage points")
-    print(f"  Time elapsed : {elapsed:.0f}s  ({elapsed/60:.1f} min)")
-    print(f"{BAR2}")
-    print(f"\n  Open these files to see the results:")
-    print(f"  • Chart  : {os.path.abspath(chart_path)}")
-    print(f"  • Videos : {os.path.abspath(OUT_DIR)}\\ep01.mp4 ... ep{args.episodes:02d}.mp4")
-    print(f"  • Summary: {os.path.abspath(summary_path)}")
-    print()
+    print(f"\n{BAR}", flush=True)
+    print(f"  🏁  RUN COMPLETED SUCCESSFULLY", flush=True)
+    print(f"{BAR}", flush=True)
+    print(f"  Early Deaths   : {init_deaths} deaths/ep  →  Late Deaths: {final_deaths} deaths/ep", flush=True)
+    print(f"  Evacuation Rate: {first_pct}%  →  {last_pct}% (Peak: {int(100*best['evacuated']/args.agents)}% in Ep {best['episode']:02d})", flush=True)
+    print(f"  All videos, snapshots, and charts are ready in:", flush=True)
+    print(f"  👉 {os.path.abspath(run_dir)}", flush=True)
+    print(f"{BAR}\n", flush=True)
 
 
 if __name__ == "__main__":

@@ -3,15 +3,16 @@ env_evac.py
 ===========
 Track B: Multi-Agent Gymnasium Environment for Hazard-Adaptive Indoor Evacuation.
 
-BUG FIXES (Nov 2026 rebuild):
-  1. Spawn fix: agents now spawn ONLY on graph nodes (dist_map keys), which are
-     the navigable skeleton pixels connected to exits. The old code spawned on
-     any free_space pixel (~90% of the floor plan image), causing "dots everywhere".
-  2. Exit detection fix: replaced broken dist_map key lookup (which returned
-     max_dist for off-grid positions) with direct Euclidean distance to exit coords.
-  3. Added death_positions dict so video renderer can draw persistent death markers.
-  4. Added curriculum_max_dist parameter for gradual spawn radius expansion.
-  5. Increased default exit_reward from 100 to 300 for stronger learning signal.
+HIGH-ENERGY / SPICY REBUILD (Nov 2026):
+  1. Fast Movement: Step size increased to 4px (with continuous midpoint wall check).
+     Adults move every tick (period=1), young every 2 ticks, elderly every 2 ticks.
+     Agents can now easily traverse the full 701px building in 150-200 ticks!
+  2. Aggressive Fire Spread: Fire expands faster across corridor chokepoints
+     (spread_chance=0.20, interval=2), creating urgent life-or-death pressure.
+  3. Stratified Random Spawning: Agents spawn randomly across 4 distinct vertical zones
+     (North shops, mid passage, central corridor, south vestibule).
+  4. Exit Detection: Euclidean reach radius of 30px with +500 reward.
+  5. Persistent Death Tracking: Records exact demise coordinates for vivid death rendering.
 """
 
 import math
@@ -32,21 +33,22 @@ class EvacAgentState:
         self.is_dead = False
         self.ticks_remaining = 0
         self.total_steps = 0
+        self.last_action = 0
 
-        # Demographic speed and social priority
+        # Fast demographic speeds & yielding priorities
         if agent_type == 'young':
-            self.period = 3           # moves every 3 ticks (slower than adult)
-            self.priority = 1         # yields first (gets out of the way)
+            self.period = 2           # moves every 2 ticks
+            self.priority = 1         # yields first
             self.priority_norm = 0.33
             self.type_one_hot = np.array([0.0, 1.0, 0.0], dtype=np.float32)
         elif agent_type == 'elderly':
-            self.period = 4           # moves every 4 ticks (slowest)
+            self.period = 2           # moves every 2 ticks (steady pace)
             self.priority = 2         # yields second
             self.priority_norm = 0.66
             self.type_one_hot = np.array([0.0, 0.0, 1.0], dtype=np.float32)
         else:  # adult
-            self.period = 2           # moves every 2 ticks (fastest)
-            self.priority = 3         # moves last (lets others yield first)
+            self.period = 1           # moves EVERY tick (fast!)
+            self.priority = 3         # highest speed
             self.priority_norm = 1.00
             self.type_one_hot = np.array([1.0, 0.0, 0.0], dtype=np.float32)
 
@@ -54,17 +56,17 @@ class EvacAgentState:
 class HazardEvacEnv(gym.Env):
     metadata = {"render_modes": ["rgb_array"]}
 
-    # 9-DoF action space: Stay + 8 compass directions (step size 2px to match graph)
+    # 9-DoF action space: Stay + 8 compass directions with FAST 4-pixel step size
     ACTION_DELTAS = [
         (0,  0),   # 0: Stay
-        (0, -2),   # 1: North
-        (2, -2),   # 2: North-East
-        (2,  0),   # 3: East
-        (2,  2),   # 4: South-East
-        (0,  2),   # 5: South
-        (-2, 2),   # 6: South-West
-        (-2, 0),   # 7: West
-        (-2,-2),   # 8: North-West
+        (0, -4),   # 1: North
+        (3, -3),   # 2: North-East
+        (4,  0),   # 3: East
+        (3,  3),   # 4: South-East
+        (0,  4),   # 5: South
+        (-3, 3),   # 6: South-West
+        (-4, 0),   # 7: West
+        (-3,-3),   # 8: North-West
     ]
 
     def __init__(
@@ -72,16 +74,15 @@ class HazardEvacEnv(gym.Env):
         free_space_grid: np.ndarray,
         dist_map: Dict[Tuple[float, float], float],
         exit_coords: List[Tuple[int, int]],
-        num_agents: int = 50,
+        num_agents: int = 15,
         age_ratio: Tuple[int, int, int] = (6, 3, 1),
-        fire_spread_chance: float = 0.08,
-        fire_interval: int = 5,
+        fire_spread_chance: float = 0.20,
+        fire_interval: int = 2,
         obs_window_size: int = 21,
-        max_ticks: int = 1500,
-        fire_origin: Tuple[int, int] = (250, 580),
-        curriculum_max_dist: Optional[float] = None,
-        exit_reach_dist: float = 25.0,
-        exit_reward: float = 300.0,
+        max_ticks: int = 300,
+        fire_origin: Tuple[int, int] = (250, 560),
+        exit_reach_dist: float = 30.0,
+        exit_reward: float = 500.0,
     ):
         super().__init__()
 
@@ -99,14 +100,13 @@ class HazardEvacEnv(gym.Env):
         self.half_window = obs_window_size // 2
         self.max_ticks = max_ticks
         self.fire_origin = fire_origin
-        self.curriculum_max_dist = curriculum_max_dist
         self.exit_reach_dist = exit_reach_dist
         self.exit_reward = exit_reward
 
         # Global spatial grids
-        self.fire_grid        = np.zeros_like(self.free_space, dtype=bool)
-        self.occupancy_grid   = np.zeros_like(self.free_space, dtype=bool)
-        self.fire_dist_grid   = np.ones_like(self.free_space, dtype=np.float32)
+        self.fire_grid           = np.zeros_like(self.free_space, dtype=bool)
+        self.occupancy_grid      = np.zeros_like(self.free_space, dtype=bool)
+        self.fire_dist_grid      = np.ones_like(self.free_space, dtype=np.float32)
         self.norm_potential_grid = np.zeros_like(self.free_space, dtype=np.float32)
 
         # Precompute normalized distance-to-exit potential field
@@ -119,25 +119,45 @@ class HazardEvacEnv(gym.Env):
         self.current_tick: int = 0
         self.agents: Dict[int, EvacAgentState] = {}
 
-        # --- SPAWN FIX: Use graph node positions (dist_map keys) instead of raw free_space ---
-        # dist_map keys are ONLY positions on the navigable corridor skeleton that are
-        # connected to at least one exit via the navigation graph. This is correct.
+        # Navigable corridor skeleton nodes connected to exits
         self.graph_positions: List[Tuple[int, int]] = [
             (int(round(x)), int(round(y)))
             for (x, y) in dist_map.keys()
             if 0 <= int(round(y)) < self.h and 0 <= int(round(x)) < self.w
         ]
 
-        # Death positions: persists until reset, used by video renderer to draw X markers
+        # Stratify graph positions into 4 vertical zones for uniform spawn distribution
+        self.zone_positions: Dict[int, List[Tuple[int, int]]] = {
+            1: [(x, y) for (x, y) in self.graph_positions if 40 <= y < 200],    # North shops
+            2: [(x, y) for (x, y) in self.graph_positions if 200 <= y < 360],   # Mid-North passage
+            3: [(x, y) for (x, y) in self.graph_positions if 360 <= y < 520],   # Central passage
+            4: [(x, y) for (x, y) in self.graph_positions if 520 <= y < 620],   # South corridor / rooms
+        }
+
+        # Death tracking: stores (x, y) where each agent died
         self.death_positions: Dict[int, Tuple[int, int]] = {}
 
         # Gymnasium spaces
         self.action_space = spaces.Discrete(9)
         self.observation_space = spaces.Dict({
-            "spatial":     spaces.Box(0.0, 1.0,   (obs_window_size, obs_window_size, 6), np.float32),
-            "proprio":     spaces.Box(-1.0, 1.0,  (7,),                                  np.float32),
-            "action_mask": spaces.Box(0, 1,        (9,),                                  np.int8),
+            "spatial":     spaces.Box(0.0, 1.0,  (obs_window_size, obs_window_size, 6), np.float32),
+            "proprio":     spaces.Box(-1.0, 1.0, (7,),                                  np.float32),
+            "action_mask": spaces.Box(0, 1,       (9,),                                  np.int8),
         })
+
+    # ------------------------------------------------------------------
+    # Step Validation (Midpoint check prevents jumping through thin walls)
+    # ------------------------------------------------------------------
+    def is_valid_step(self, cx: int, cy: int, tx: int, ty: int) -> bool:
+        if not (0 <= ty < self.h and 0 <= tx < self.w):
+            return False
+        if not self.free_space[ty, tx] or self.occupancy_grid[ty, tx]:
+            return False
+        # Midpoint wall collision check
+        mx, my = (cx + tx) // 2, (cy + ty) // 2
+        if not self.free_space[my, mx]:
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # Reset
@@ -158,37 +178,33 @@ class HazardEvacEnv(gym.Env):
         self.active_fire_front.clear()
         self.death_positions.clear()
 
-        # Ignite fire at designated chokepoint origin
+        # Ignite fire at the corridor bottleneck chokepoint
         fx, fy = self.fire_origin
         if 0 <= fy < self.h and 0 <= fx < self.w:
-            self.fire_grid[fy, fx] = True
-            self.active_fire_front.add((fx, fy))
+            # Seed a 3x3 fire cluster for immediate threat
+            for dy in [-1, 0, 1]:
+                for dx in [-1, 0, 1]:
+                    if 0 <= fy + dy < self.h and 0 <= fx + dx < self.w and self.free_space[fy + dy, fx + dx]:
+                        self.fire_grid[fy + dy, fx + dx] = True
+                        self.active_fire_front.add((fx + dx, fy + dy))
         self._update_fire_distances()
 
-        # Determine curriculum spawn radius for this episode
-        cur_dist = None
-        if options and 'curriculum_max_dist' in options:
-            cur_dist = options['curriculum_max_dist']
-        elif self.curriculum_max_dist is not None:
-            cur_dist = self.curriculum_max_dist
+        # Stratified random spawning across all 4 zones
+        chosen_spawns: List[Tuple[int, int]] = []
+        per_zone = max(1, self.num_agents // 4)
+        for z in [1, 2, 3, 4]:
+            pool = [p for p in self.zone_positions[z] if not self.fire_grid[p[1], p[0]]]
+            if pool:
+                take = min(per_zone, len(pool))
+                chosen_spawns.extend(random.sample(pool, take))
 
-        # Build spawn pool from graph positions only
-        if cur_dist is not None and self.exit_coords:
-            spawn_pool = [
-                (x, y) for (x, y) in self.graph_positions
-                if not self.fire_grid[y, x]
-                and min(math.hypot(x - ex, y - ey) for ex, ey in self.exit_coords) <= cur_dist
-                and min(math.hypot(x - ex, y - ey) for ex, ey in self.exit_coords) > self.exit_reach_dist
-            ]
-            if len(spawn_pool) < max(self.num_agents, 10):
-                spawn_pool = [(x, y) for (x, y) in self.graph_positions if not self.fire_grid[y, x]]
-        else:
-            spawn_pool = [(x, y) for (x, y) in self.graph_positions if not self.fire_grid[y, x]]
+        # Fill any remainder from the full graph pool
+        while len(chosen_spawns) < self.num_agents:
+            cand = random.choice(self.graph_positions)
+            if cand not in chosen_spawns and not self.fire_grid[cand[1], cand[0]]:
+                chosen_spawns.append(cand)
 
-        if not spawn_pool:
-            # Absolute last resort (should not happen with valid floor plan)
-            vy, vx = np.where(self.free_space & ~self.fire_grid)
-            spawn_pool = list(zip(vx.tolist(), vy.tolist()))
+        chosen_spawns = chosen_spawns[:self.num_agents]
 
         # Assign demographic types
         total_w = sum(self.age_ratio)
@@ -201,10 +217,9 @@ class HazardEvacEnv(gym.Env):
         types = types[:self.num_agents]
         random.shuffle(types)
 
-        # Spawn agents
-        positions = random.sample(spawn_pool, min(self.num_agents, len(spawn_pool)))
+        # Initialize agents
         self.agents.clear()
-        for i, (sx, sy) in enumerate(positions):
+        for i, (sx, sy) in enumerate(chosen_spawns):
             agent = EvacAgentState(i, (sx, sy), types[i])
             self.agents[i] = agent
             self.occupancy_grid[sy, sx] = True
@@ -220,7 +235,7 @@ class HazardEvacEnv(gym.Env):
         return observations, info
 
     # ------------------------------------------------------------------
-    # Fire dynamics
+    # Fire Dynamics
     # ------------------------------------------------------------------
     def _update_fire_distances(self):
         if not self.active_fire_front:
@@ -233,7 +248,7 @@ class HazardEvacEnv(gym.Env):
         new_front: set = set()
         for fx, fy in list(self.active_fire_front):
             has_unburned = False
-            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1), (-1, 1), (1, -1)]:
                 nx_c, ny_c = fx + dx, fy + dy
                 if 0 <= ny_c < self.h and 0 <= nx_c < self.w:
                     if self.free_space[ny_c, nx_c] and not self.fire_grid[ny_c, nx_c]:
@@ -248,29 +263,26 @@ class HazardEvacEnv(gym.Env):
             self._update_fire_distances()
 
     # ------------------------------------------------------------------
-    # Observation helpers
+    # Observation & Action Masking
     # ------------------------------------------------------------------
     def _get_exit_dist(self, x: int, y: int) -> float:
-        """Graph distance to nearest exit with Euclidean fallback."""
         d = self.dist_map.get((float(x), float(y)), None)
         if d is not None:
             return d
-        # Fallback: Euclidean to nearest exit coord
         if self.exit_coords:
             return min(math.hypot(x - ex, y - ey) for ex, ey in self.exit_coords)
         return self.max_dist
 
     def _get_action_mask(self, agent: EvacAgentState) -> np.ndarray:
         mask = np.zeros(9, dtype=np.int8)
-        mask[0] = 1  # Stay is always valid
+        mask[0] = 1  # Stay is always possible
         ax, ay = agent.pos
         for a_idx, (dx, dy) in enumerate(self.ACTION_DELTAS):
             if a_idx == 0:
                 continue
             tx, ty = ax + dx, ay + dy
-            if 0 <= ty < self.h and 0 <= tx < self.w:
-                if self.free_space[ty, tx] and not self.occupancy_grid[ty, tx]:
-                    mask[a_idx] = 1
+            if self.is_valid_step(ax, ay, tx, ty):
+                mask[a_idx] = 1
         return mask
 
     def _get_agent_observation(self, agent: EvacAgentState) -> Dict[str, np.ndarray]:
@@ -299,12 +311,10 @@ class HazardEvacEnv(gym.Env):
         spatial[dst_y1:dst_y2, dst_x1:dst_x2, 4] = self.fire_dist_grid[src_y1:src_y2, src_x1:src_x2]
         spatial[dst_y1:dst_y2, dst_x1:dst_x2, 5] = self.norm_potential_grid[src_y1:src_y2, src_x1:src_x2]
 
-        # Proprioceptive vector: [adult?, young?, elderly?, speed_phase, exit_dist, fire_dist, dir_to_exit_x]
         exit_dist_norm = self._get_exit_dist(ax, ay) / self.max_dist
         fire_dist_norm = float(self.fire_dist_grid[ay, ax])
         speed_phase    = float(agent.ticks_remaining) / float(agent.period)
 
-        # Direction unit vector toward nearest exit
         if self.exit_coords:
             nearest_exit = min(self.exit_coords, key=lambda e: math.hypot(ax - e[0], ay - e[1]))
             ex, ey = nearest_exit
@@ -315,9 +325,9 @@ class HazardEvacEnv(gym.Env):
         ux = vec_x / norm_v
 
         proprio = np.array([
-            agent.type_one_hot[0],  # is adult
-            agent.type_one_hot[1],  # is young
-            agent.type_one_hot[2],  # is elderly
+            agent.type_one_hot[0],
+            agent.type_one_hot[1],
+            agent.type_one_hot[2],
             speed_phase,
             exit_dist_norm,
             fire_dist_norm,
@@ -331,7 +341,7 @@ class HazardEvacEnv(gym.Env):
         }
 
     # ------------------------------------------------------------------
-    # Step
+    # Step Execution
     # ------------------------------------------------------------------
     def step(
         self,
@@ -347,60 +357,63 @@ class HazardEvacEnv(gym.Env):
         truncated:   Dict[int, bool]  = {}
         observations: Dict[int, dict] = {}
 
-        # Process agents in social priority order: young first (they yield), then elderly, then adults
+        # Social priority sorting: young first, then elderly, then adults
         active_ids = [aid for aid, a in self.agents.items() if not a.is_evacuated and not a.is_dead]
         active_ids.sort(key=lambda aid: (self.agents[aid].priority, random.random()))
 
         for aid in active_ids:
             agent  = self.agents[aid]
             agent.ticks_remaining += 1
-            reward = -0.05  # small time penalty every tick
+            reward = -0.05  # time step cost
 
             if agent.ticks_remaining >= agent.period:
                 agent.ticks_remaining = 0
                 agent.total_steps += 1
 
                 action    = actions.get(aid, 0)
+                agent.last_action = action
                 dx, dy    = self.ACTION_DELTAS[action]
                 cx, cy    = agent.pos
                 tx, ty    = cx + dx, cy + dy
 
                 in_bounds = 0 <= ty < self.h and 0 <= tx < self.w
 
-                # --- CASE 1: Stepped into fire → death ---
-                if in_bounds and self.fire_grid[ty, tx]:
+                # 1. FATAL FIRE COLLISION (Death)
+                # Check target and midpoint for fire
+                mx, my = (cx + tx) // 2, (cy + ty) // 2
+                stepped_in_fire = in_bounds and (self.fire_grid[ty, tx] or self.fire_grid[my, mx])
+
+                if stepped_in_fire:
                     agent.is_dead = True
-                    self.death_positions[aid] = (cx, cy)   # record death location for X marker
+                    self.death_positions[aid] = (cx, cy)
                     self.occupancy_grid[cy, cx] = False
-                    reward -= 200.0
+                    reward -= 350.0  # Massive penalty for dying in fire
                     terminated[aid] = True
 
-                # --- CASE 2: Wall / occupied collision → bump penalty ---
-                elif not in_bounds or not self.free_space[ty, tx] or self.occupancy_grid[ty, tx]:
-                    reward -= 1.5
+                # 2. INVALID / WALL STEP
+                elif not self.is_valid_step(cx, cy, tx, ty):
+                    reward -= 1.0
 
-                # --- CASE 3: Valid move ---
+                # 3. SUCCESSFUL STEP
                 else:
                     prev_pot = self._get_exit_dist(cx, cy)
                     curr_pot = self._get_exit_dist(tx, ty)
 
-                    # Shaped progress reward: positive for moving toward exit
-                    progress = max(0.0, prev_pot - curr_pot)
-                    reward  += 2.0 * progress
+                    # Progress reward: strong incentive to move toward exit
+                    progress = prev_pot - curr_pot
+                    reward  += 3.0 * progress
 
-                    # Hazard repulsion: exponential penalty for proximity to fire
+                    # Hazard proximity penalty: exponential repulsion from fire
                     fire_dist_px = self.fire_dist_grid[ty, tx] * 100.0
-                    if fire_dist_px < 30.0:
-                        reward -= 10.0 * math.exp(-fire_dist_px / 10.0)
+                    if fire_dist_px < 35.0:
+                        reward -= 25.0 * math.exp(-fire_dist_px / 12.0)
 
-                    # Execute the move
+                    # Update position
                     self.occupancy_grid[cy, cx] = False
                     agent.pos = (tx, ty)
                     self.occupancy_grid[ty, tx] = True
 
-                    # --- EXIT DETECTION FIX: Euclidean proximity to any exit coord ---
-                    # Old code used dist_map key lookup which silently failed for
-                    # off-grid positions. Euclidean check is reliable.
+                    # 4. EXIT REACHED CHECK
                     if self.exit_coords:
                         min_exit_dist = min(math.hypot(tx - ex, ty - ey) for ex, ey in self.exit_coords)
                         if min_exit_dist <= self.exit_reach_dist:

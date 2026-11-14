@@ -280,18 +280,33 @@ with tabs[2]:
     st.caption("Inspect the progression of learning, demographic path tracing, hazard deaths, and video playback per episode.")
 
     rl_runs_dir = os.path.join(current_dir, "outputs", "rl_runs")
-    chart_file = os.path.join(rl_runs_dir, "improvement_chart.png")
+    all_runs = []
+    if os.path.exists(rl_runs_dir):
+        subdirs = [d for d in os.listdir(rl_runs_dir) if os.path.isdir(os.path.join(rl_runs_dir, d))]
+        run_subdirs = sorted([d for d in subdirs if d.startswith("run_")], reverse=True)
+        if "latest" in subdirs:
+            all_runs.append("latest (most recent run)")
+        all_runs.extend(run_subdirs)
+
+    if all_runs:
+        chosen_run_raw = st.selectbox("📁 Select Training Run Session to Inspect:", options=all_runs)
+        chosen_run = "latest" if "latest" in chosen_run_raw else chosen_run_raw
+        target_dir = os.path.join(rl_runs_dir, chosen_run)
+    else:
+        target_dir = rl_runs_dir
+
+    chart_file = os.path.join(target_dir, "improvement_chart.png")
 
     if os.path.exists(chart_file):
-        st.image(chart_file, caption="RL Training Progression across Episodes", use_container_width=True)
+        st.image(chart_file, caption=f"RL Training Progression ({chosen_run_raw if all_runs else 'Default Run'})", use_container_width=True)
 
-        summary_file = os.path.join(rl_runs_dir, "summary.txt")
+        summary_file = os.path.join(target_dir, "summary.txt")
         if os.path.exists(summary_file):
             with open(summary_file, "r", encoding="utf-8") as sf:
                 with st.expander("📄 View Training Log & Metrics Summary"):
                     st.text(sf.read())
 
-        mp4_files = sorted([f for f in os.listdir(rl_runs_dir) if f.startswith("ep") and f.endswith(".mp4")])
+        mp4_files = sorted([f for f in os.listdir(target_dir) if f.startswith("ep") and f.endswith(".mp4")])
         if mp4_files:
             selected_ep_file = st.selectbox(
                 "🎬 Select Episode to Inspect (Start vs. End Snapshot & Video Playback):",
@@ -299,9 +314,9 @@ with tabs[2]:
                 format_func=lambda x: f"Episode {int(x[2:4])} ({x})"
             )
             ep_tag = selected_ep_file.replace(".mp4", "")
-            start_img_path = os.path.join(rl_runs_dir, f"{ep_tag}_start.png")
-            end_img_path = os.path.join(rl_runs_dir, f"{ep_tag}_end.png")
-            vid_path = os.path.join(rl_runs_dir, selected_ep_file)
+            start_img_path = os.path.join(target_dir, f"{ep_tag}_start.png")
+            end_img_path = os.path.join(target_dir, f"{ep_tag}_end.png")
+            vid_path = os.path.join(target_dir, selected_ep_file)
 
             c_snap1, c_snap2 = st.columns(2)
             with c_snap1:
