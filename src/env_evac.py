@@ -34,6 +34,7 @@ class EvacAgentState:
         self.ticks_remaining = 0
         self.total_steps = 0
         self.last_action = 0
+        self.wall_stick_ticks = 0  # Consecutive ticks staying near/against walls
 
         # Fast demographic speeds & yielding priorities
         if agent_type == 'young':
@@ -108,6 +109,8 @@ class HazardEvacEnv(gym.Env):
         self.occupancy_grid      = np.zeros_like(self.free_space, dtype=bool)
         self.fire_dist_grid      = np.ones_like(self.free_space, dtype=np.float32)
         self.norm_potential_grid = np.zeros_like(self.free_space, dtype=np.float32)
+        # Precompute distance from walls (px) for all navigable space
+        self.wall_dist_grid      = distance_transform_edt(self.free_space).astype(np.float32)
 
         # Precompute normalized distance-to-exit potential field
         for (x, y), d in dist_map.items():
@@ -151,6 +154,9 @@ class HazardEvacEnv(gym.Env):
     def is_valid_step(self, cx: int, cy: int, tx: int, ty: int) -> bool:
         if not (0 <= ty < self.h and 0 <= tx < self.w):
             return False
+        # Staying in place is valid if current cell is free space
+        if tx == cx and ty == cy:
+            return self.free_space[ty, tx]
         if not self.free_space[ty, tx] or self.occupancy_grid[ty, tx]:
             return False
         # Midpoint wall collision check
@@ -307,6 +313,7 @@ class HazardEvacEnv(gym.Env):
         spatial = np.zeros((k, k, 6), dtype=np.float32)
         spatial[dst_y1:dst_y2, dst_x1:dst_x2, 0] = self.free_space[src_y1:src_y2, src_x1:src_x2].astype(np.float32)
         spatial[dst_y1:dst_y2, dst_x1:dst_x2, 1] = self.occupancy_grid[src_y1:src_y2, src_x1:src_x2].astype(np.float32)
+        spatial[dst_y1:dst_y2, dst_x1:dst_x2, 2] = np.clip(self.wall_dist_grid[src_y1:src_y2, src_x1:src_x2] / 20.0, 0.0, 1.0)
         spatial[dst_y1:dst_y2, dst_x1:dst_x2, 3] = self.fire_grid[src_y1:src_y2, src_x1:src_x2].astype(np.float32)
         spatial[dst_y1:dst_y2, dst_x1:dst_x2, 4] = self.fire_dist_grid[src_y1:src_y2, src_x1:src_x2]
         spatial[dst_y1:dst_y2, dst_x1:dst_x2, 5] = self.norm_potential_grid[src_y1:src_y2, src_x1:src_x2]
@@ -392,7 +399,8 @@ class HazardEvacEnv(gym.Env):
 
                 # 2. INVALID / WALL STEP
                 elif not self.is_valid_step(cx, cy, tx, ty):
-                    reward -= 1.0
+                    agent.wall_stick_ticks += 2  # Wall collision accelerates sticking penalty
+                    reward -= 1.5
 
                 # 3. SUCCESSFUL STEP
                 else:
@@ -421,6 +429,22 @@ class HazardEvacEnv(gym.Env):
                             self.occupancy_grid[ty, tx] = False
                             reward += self.exit_reward
                             terminated[aid] = True
+
+                # 5. WALL STICKING & PROXIMITY CHECK (Stacking Penalty)
+                if not terminated.get(aid, False):
+                    curr_x, curr_y = agent.pos
+                    dist_to_wall = self.wall_dist_grid[curr_y, curr_x]
+                    if dist_to_wall <= 4.0:
+                        agent.wall_stick_ticks += 1
+                    else:
+                        # Moving into open corridor space resets/decays wall sticking counter
+                        agent.wall_stick_ticks = max(0, agent.wall_stick_ticks - 2)
+
+                    # Stacking penalty if sticking near/against wall for more than 2 consecutive moves
+                    if agent.wall_stick_ticks > 2:
+                        excess_ticks = agent.wall_stick_ticks - 2
+                        stacking_wall_penalty = min(5.0, 0.25 * excess_ticks)
+                        reward -= stacking_wall_penalty
 
             rewards[aid]    = reward
             terminated[aid] = terminated.get(aid, agent.is_evacuated or agent.is_dead)

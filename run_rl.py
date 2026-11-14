@@ -162,18 +162,23 @@ def run_episode(
 
             # In early episodes, untrained agents follow corridor potential downhill (into the trap)
             if random.random() < exploration_guidance:
-                # Find valid action that moves downhill along potential (Dijkstra gradient)
+                # Find valid action that moves downhill along potential (Dijkstra gradient) with wall clearance bias
                 ax, ay = env.agents[aid].pos
                 curr_pot = env._get_exit_dist(ax, ay)
                 best_act = 0
-                best_progress = -999.0
+                best_score = -999.0
                 valid_acts = np.where(m == 1)[0]
                 for act_cand in valid_acts:
                     if act_cand == 0: continue
                     dx, dy = env.ACTION_DELTAS[act_cand]
-                    prog = curr_pot - env._get_exit_dist(ax + dx, ay + dy)
-                    if prog > best_progress:
-                        best_progress = prog
+                    nx, ny = ax + dx, ay + dy
+                    prog = curr_pot - env._get_exit_dist(nx, ny)
+                    # Wall clearance bias: prefer corridor center over hugging walls
+                    w_dist = env.wall_dist_grid[ny, nx] if (0 <= ny < env.h and 0 <= nx < env.w) else 0.0
+                    wall_bias = min(w_dist, 10.0) * 0.15
+                    score = prog + wall_bias
+                    if score > best_score:
+                        best_score = score
                         best_act = act_cand
                 act = best_act if best_act in valid_acts else int(np.random.choice(valid_acts))
                 # Pass through network for evaluation
@@ -464,6 +469,7 @@ def main():
         f"Fire Bottleneck  : Origin {FIRE_ORIGIN} (Aggressive spread: sigma=0.20, interval=2)",
         f"Occupant Crowd   : {args.agents} agents (Stratified spawn across 4 building sectors)",
         f"Movement Profile : 4px/step (Adult: 1 tick/step, Young/Elderly: 2 ticks/step)",
+        f"Wall Avoidance   : Stacking penalty (up to -5.0/tick) for staying near walls >2 ticks",
         f"Total Episodes   : {args.episodes}",
         f"Max Ticks/Ep     : {args.ticks}",
         "--------------------------------------------------------------------------",
