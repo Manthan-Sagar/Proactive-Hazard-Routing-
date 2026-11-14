@@ -423,11 +423,27 @@ def main():
 
     print("  [1/3] Loading Ground Floor CAD raster and navigation topology...", end=" ", flush=True)
     img, free_space, graph, exits, _ = load_floor(FLOOR_KEY)
-    lengths, _ = nx.multi_source_dijkstra(graph, sources=exits, weight='weight')
+
+    # Clearance-weighted potential field: forces potential gradient to flow down corridor centerlines
+    from scipy.ndimage import distance_transform_edt
+    wall_dist_raw = distance_transform_edt(free_space).astype(np.float32)
+    g_clear = graph.copy()
+    for u, v, data in g_clear.edges(data=True):
+        p1 = g_clear.nodes[u]['pos']
+        p2 = g_clear.nodes[v]['pos']
+        w1 = wall_dist_raw[int(round(p1[1])), int(round(p1[0]))]
+        w2 = wall_dist_raw[int(round(p2[1])), int(round(p2[0]))]
+        avg_w = (w1 + w2) / 2.0
+        repulsion = 0.0
+        if avg_w < 6.0:
+            repulsion = 25.0 * (6.0 - avg_w) ** 2
+        data['weight'] = data.get('weight', 1.0) + repulsion
+
+    lengths, _  = nx.multi_source_dijkstra(g_clear, sources=exits, weight='weight')
     dist_map    = {graph.nodes[n]['pos']: d for n, d in lengths.items()}
     exit_coords = [graph.nodes[e]['pos'] for e in exits]
     base_bgr    = cv2.cvtColor(np.asarray(img, dtype=np.uint8), cv2.COLOR_RGB2BGR)
-    print(f"Done! ({len(exits)} exits, {len(dist_map):,} corridor graph nodes)", flush=True)
+    print(f"Done! ({len(exits)} exits, {len(dist_map):,} nodes with corridor-centering field)", flush=True)
 
     print("  [2/3] Initializing Gymnasium Multi-Agent Environment...", end=" ", flush=True)
     env = HazardEvacEnv(

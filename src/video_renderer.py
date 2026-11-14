@@ -43,7 +43,7 @@ COLORS = {
 
 BANNER_H  = 44   # top info bar height (px)
 LEGEND_H  = 34   # bottom legend bar height (px)
-DOT_R     = 7    # agent dot radius
+DOT_R     = 4    # agent dot radius (compact 4px core + 2px halo stays strictly inside corridor walls)
 TRAIL_LEN = 60   # max trail history shown
 
 
@@ -140,7 +140,7 @@ def draw_simulation_frame(
             continue
         cx, cy = int(agent.pos[0]), int(agent.pos[1])
         color = COLORS.get(agent.agent_type, COLORS['adult'])
-        cv2.circle(frame, (cx, cy), DOT_R + 3, (255, 255, 255), -1)   # white halo
+        cv2.circle(frame, (cx, cy), DOT_R + 2, (255, 255, 255), -1)   # sharp 2px white halo
         cv2.circle(frame, (cx, cy), DOT_R,     color, -1)              # demographic fill
 
     # ------------------------------------------------------------------

@@ -129,12 +129,13 @@ class HazardEvacEnv(gym.Env):
             if 0 <= int(round(y)) < self.h and 0 <= int(round(x)) < self.w
         ]
 
-        # Stratify graph positions into 4 vertical zones for uniform spawn distribution
+        # Stratify graph positions into 4 vertical zones, requiring strong wall clearance (>= 6.0px)
+        # so agents NEVER spawn adjacent to or overlapping walls
         self.zone_positions: Dict[int, List[Tuple[int, int]]] = {
-            1: [(x, y) for (x, y) in self.graph_positions if 40 <= y < 200],    # North shops
-            2: [(x, y) for (x, y) in self.graph_positions if 200 <= y < 360],   # Mid-North passage
-            3: [(x, y) for (x, y) in self.graph_positions if 360 <= y < 520],   # Central passage
-            4: [(x, y) for (x, y) in self.graph_positions if 520 <= y < 620],   # South corridor / rooms
+            1: [(x, y) for (x, y) in self.graph_positions if 40 <= y < 200 and self.wall_dist_grid[y, x] >= 6.0],
+            2: [(x, y) for (x, y) in self.graph_positions if 200 <= y < 360 and self.wall_dist_grid[y, x] >= 6.0],
+            3: [(x, y) for (x, y) in self.graph_positions if 360 <= y < 520 and self.wall_dist_grid[y, x] >= 6.0],
+            4: [(x, y) for (x, y) in self.graph_positions if 520 <= y < 620 and self.wall_dist_grid[y, x] >= 6.0],
         }
 
         # Death tracking: stores (x, y) where each agent died
@@ -159,6 +160,10 @@ class HazardEvacEnv(gym.Env):
             return self.free_space[ty, tx]
         if not self.free_space[ty, tx] or self.occupancy_grid[ty, tx]:
             return False
+        # Physical body clearance: prevent stepping directly against/inside walls (< 2.0px)
+        if self.wall_dist_grid[ty, tx] < 2.0:
+            if not self.exit_coords or min(math.hypot(tx - ex, ty - ey) for ex, ey in self.exit_coords) > 40.0:
+                return False
         # Midpoint wall collision check
         mx, my = (cx + tx) // 2, (cy + ty) // 2
         if not self.free_space[my, mx]:
@@ -204,9 +209,10 @@ class HazardEvacEnv(gym.Env):
                 take = min(per_zone, len(pool))
                 chosen_spawns.extend(random.sample(pool, take))
 
-        # Fill any remainder from the full graph pool
+        # Fill any remainder from the clear graph pool (>= 6.0px from wall)
+        clear_pool = [p for p in self.graph_positions if self.wall_dist_grid[p[1], p[0]] >= 6.0]
         while len(chosen_spawns) < self.num_agents:
-            cand = random.choice(self.graph_positions)
+            cand = random.choice(clear_pool if clear_pool else self.graph_positions)
             if cand not in chosen_spawns and not self.fire_grid[cand[1], cand[0]]:
                 chosen_spawns.append(cand)
 
