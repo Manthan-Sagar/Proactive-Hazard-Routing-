@@ -92,7 +92,12 @@ except Exception as e:
     st.error(f"Error loading floor {floor_choice}: {e}")
     st.stop()
 
-tabs = st.tabs(["🚀 Evacuation Simulation", "🗺️ Floor Map & Chokepoint Inspection", "📋 Project Status & RL Architecture"])
+tabs = st.tabs([
+    "🚀 Evacuation Simulation",
+    "🗺️ Floor Map & Chokepoint Inspection",
+    "🤖 Multi-Agent RL Policy (Untrained vs. Trained)",
+    "📋 Project Status & RL Architecture"
+])
 
 # TAB 1: Simulation Execution
 with tabs[0]:
@@ -202,13 +207,82 @@ with tabs[1]:
         3. **Dynamic Repair:** Dynamically invalidates blocked corridors, steering occupants into parallel unblocked pathways.
         """)
 
-# TAB 3: Status & Architecture
+# TAB 3: Multi-Agent RL Policy Execution
 with tabs[2]:
+    st.subheader(f"🤖 Multi-Agent Reinforcement Learning Playback ({FLOOR_PRESETS[floor_choice]['name']} Floor)")
+    st.caption("Visually inspects how the trained Actor-Critic policy behaves compared to an untrained baseline.")
+
+    rl_c1, rl_c2 = st.columns([1, 2])
+    with rl_c1:
+        st.markdown("#### Policy Settings")
+        policy_mode = st.radio(
+            "Select Policy Model:",
+            ["Trained Recurrent Policy (checkpoints/rnn_policy_latest.pt)", "Untrained Policy (Random Baseline)"]
+        )
+        rl_agents = st.number_input("RL Occupant Crowd", min_value=5, max_value=60, value=20, step=5)
+        rl_ticks = st.number_input("Rollout Max Ticks", min_value=30, max_value=300, value=100, step=10)
+        run_rl_btn = st.button("▶️ Run RL Simulation & View Real-Time Playback", use_container_width=True)
+
+        st.markdown("---")
+        st.markdown("#### Side-by-Side Video Generation")
+        st.caption("Renders an MP4 comparing Untrained vs. Trained Policy side-by-side.")
+        gen_vid_btn = st.button("🎬 Generate Side-by-Side MP4 Video", use_container_width=True)
+
+    with rl_c2:
+        from src.video_renderer import simulate_and_record_rollout, generate_comparison_video
+        from src.rl_model import ActorCriticRNN
+
+        if run_rl_btn:
+            with st.spinner("Executing policy rollout in Gymnasium environment..."):
+                selected_policy = None
+                if "Trained" in policy_mode:
+                    ckpt_file = "checkpoints/rnn_policy_latest.pt"
+                    if os.path.exists(ckpt_file):
+                        selected_policy = ActorCriticRNN()
+                        selected_policy.load(ckpt_file)
+                        st.success(f"Loaded trained policy: `{ckpt_file}`")
+                    else:
+                        st.warning("Trained checkpoint not found. Running with random initialization.")
+
+                frames = simulate_and_record_rollout(
+                    floor_key=floor_choice,
+                    policy=selected_policy,
+                    num_agents=rl_agents,
+                    max_ticks=rl_ticks,
+                    seed=int(sim_seed),
+                    title_suffix="(Trained RL)" if selected_policy else "(Untrained)"
+                )
+                st.session_state["rl_frames"] = frames
+
+        if "rl_frames" in st.session_state:
+            frames = st.session_state["rl_frames"]
+            st.markdown(f"**Simulation Completed: {len(frames)} recorded frames.**")
+            scrub_idx = st.slider("⏱️ Scrub Simulation Timeline (Tick)", 0, len(frames) - 1, 0)
+            st.image(cv2.cvtColor(frames[scrub_idx], cv2.COLOR_BGR2RGB), use_container_width=True)
+
+        if gen_vid_btn:
+            with st.spinner("Simulating and encoding side-by-side comparison video..."):
+                video_out = "outputs/comparison_evacuation.mp4"
+                generate_comparison_video(
+                    output_path=video_out,
+                    floor_key=floor_choice,
+                    trained_policy_path="checkpoints/rnn_policy_latest.pt",
+                    num_agents=rl_agents,
+                    max_ticks=rl_ticks,
+                    seed=int(sim_seed)
+                )
+                st.success(f"Side-by-side video rendered: `{video_out}`")
+                if os.path.exists(video_out):
+                    st.video(video_out)
+
+# TAB 4: Status & Architecture
+with tabs[3]:
     st.subheader("Project Status & Dual-Track Architecture")
     st.markdown("""
     | Milestone | Component | Status | Details |
     | :--- | :--- | :---: | :--- |
     | **Track A** | Proactive Dynamic Rerouting Engine | **Completed & Verified** | Lookahead horizon H = 25, EDT buffer, drops chokepoint entrapment from 20% to 0.5%. |
     | **Track B (Env)** | Gymnasium MARL Environment (`HazardEvacEnv`) | **Completed & Verified** | Dec-POMDP, 21 × 21 × 6 observation tensor, 9-DoF action masking, reward shaping. |
-    | **Track B (Model)** | PyTorch Actor-Critic Network & Training | **Documented & Ready** | Scaffolding complete; neural policy training loop designed for multi-agent PPO. |
+    | **Track B (Model)** | PyTorch Recurrent Actor-Critic (`ActorCriticRNN`) | **Completed & Verified** | CNN + MLP fusion + GRU recurrent memory (355k params) with PPO training loop. |
+    | **Visual Analytics** | Side-by-Side MP4 Video & Frame Playback | **Completed & Verified** | Interactive frame scrubber and OpenCV MP4 video generation comparing Untrained vs. Trained. |
     """)

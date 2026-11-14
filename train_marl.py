@@ -73,6 +73,10 @@ class MARLTrainer:
         history = []
         start_time = time.time()
 
+        # Save initial untrained baseline checkpoint (Episode 0)
+        untrained_ckpt = os.path.join(self.args.save_dir, f"{self.args.model_type}_policy_untrained.pt")
+        self.policy.save(untrained_ckpt)
+
         for ep in range(1, self.args.episodes + 1):
             ep_seed = self.args.seed + ep * 100
             env = HazardEvacEnv(
