@@ -67,7 +67,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="High-energy RL evacuation trainer with visual per-episode playback.")
     p.add_argument("--episodes",        type=int,   default=15,  help="Number of training episodes (default: 15)")
     p.add_argument("--agents",          type=int,   default=15,  help="Crowd size per episode (default: 15)")
-    p.add_argument("--ticks",           type=int,   default=260, help="Max ticks per episode (default: 260)")
+    p.add_argument("--ticks",           type=int,   default=280, help="Max ticks per episode (default: 280)")
     p.add_argument("--save_checkpoint", action="store_true",     help="Save final model weights to checkpoints/")
     p.add_argument("--seed",            type=int,   default=42,  help="Random seed for reproducibility")
     p.add_argument("--fps",             type=int,   default=15,  help="Video playback FPS")
@@ -75,7 +75,7 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-class RolloutBuffer:
+class AgentTrajectory:
     def __init__(self):
         self.spatials:  List[torch.Tensor] = []
         self.proprios:  List[torch.Tensor] = []
@@ -98,21 +98,72 @@ class RolloutBuffer:
         self.dones.append(d)
         self.hiddens.append(h if h is not None else torch.zeros(1, 128))
 
-    def clear(self):
-        self.__init__()
+    def compute_gae(self, gamma: float = 0.99, gae_lambda: float = 0.95):
+        T = len(self.rewards)
+        advantages = np.zeros(T, dtype=np.float32)
+        returns    = np.zeros(T, dtype=np.float32)
+        gae = 0.0
+        for t in reversed(range(T)):
+            next_val = self.values[t + 1] if (t + 1 < T and not self.dones[t]) else 0.0
+            delta    = self.rewards[t] + gamma * next_val - self.values[t]
+            gae      = delta + gamma * gae_lambda * (1.0 - float(self.dones[t])) * gae
+            advantages[t] = gae
+            returns[t]    = gae + self.values[t]
+        return advantages, returns
 
-    def __len__(self):
-        return len(self.rewards)
+
+class MultiAgentRolloutBuffer:
+    def __init__(self):
+        self.trajectories: Dict[int, AgentTrajectory] = {}
+
+    def get_trajectory(self, aid: int) -> AgentTrajectory:
+        if aid not in self.trajectories:
+            self.trajectories[aid] = AgentTrajectory()
+        return self.trajectories[aid]
+
+    def compile(self, device: torch.device) -> Optional[Dict[str, torch.Tensor]]:
+        all_s, all_p, all_m, all_a, all_lp, all_adv, all_ret, all_h = [], [], [], [], [], [], [], []
+        for traj in self.trajectories.values():
+            if len(traj.rewards) == 0:
+                continue
+            adv, ret = traj.compute_gae(GAMMA, GAE_LAMBDA)
+            all_s.extend(traj.spatials)
+            all_p.extend(traj.proprios)
+            all_m.extend(traj.masks)
+            all_a.extend(traj.actions)
+            all_lp.extend(traj.logprobs)
+            all_adv.extend(adv)
+            all_ret.extend(ret)
+            all_h.extend(traj.hiddens)
+
+        if not all_s:
+            return None
+
+        adv_arr = np.array(all_adv, dtype=np.float32)
+        if len(adv_arr) > 1 and adv_arr.std() > 1e-6:
+            adv_arr = (adv_arr - adv_arr.mean()) / (adv_arr.std() + 1e-8)
+
+        return {
+            "spatials":   torch.stack(all_s).to(device),
+            "proprios":   torch.stack(all_p).to(device),
+            "masks":      torch.stack(all_m).to(device),
+            "actions":    torch.tensor(all_a, dtype=torch.int64, device=device),
+            "logprobs":   torch.tensor(all_lp, dtype=torch.float32, device=device),
+            "advantages": torch.tensor(adv_arr, dtype=torch.float32, device=device),
+            "returns":    torch.tensor(all_ret, dtype=torch.float32, device=device),
+            "hiddens":    torch.cat(all_h, dim=0).to(device),
+        }
 
 
 def run_episode(
     env: HazardEvacEnv,
     base_bgr: np.ndarray,
     policy: ActorCriticRNN,
-    buf: RolloutBuffer,
+    buf: MultiAgentRolloutBuffer,
     ep: int,
     args: argparse.Namespace,
     run_dir: str,
+    device: torch.device,
 ) -> Tuple[Dict, str, str, str]:
     """Runs a single episode rollout, records MP4 video, and saves start/end snapshots."""
     start_png = os.path.join(run_dir, f"ep{ep:02d}_start.png")
@@ -145,14 +196,13 @@ def run_episode(
     last_frame = start_frame
     step_count = 0
 
-    # Exploration guidance weight: decreases over episodes as policy takes over
-    # Early episodes: agents follow corridor gradient towards exit (walking into fire)
-    # Later episodes: policy takes full control, using learned CNN vision to avoid fire
-    exploration_guidance = max(0.0, 0.40 - 0.03 * (ep - 1))
+    # Exploration guidance weight: smoothly transitions from initial guidance to trained policy
+    exploration_guidance = max(0.05, 0.45 - 0.03 * (ep - 1))
 
     while True:
         step_count += 1
         actions: Dict[int, int] = {}
+        step_records: Dict[int, Tuple] = {}
 
         for aid, o in obs.items():
             s = o["spatial"]
@@ -160,53 +210,58 @@ def run_episode(
             m = o["action_mask"]
             h_in = agent_hiddens.get(aid)
 
-            # In early episodes, untrained agents follow corridor potential downhill (into the trap)
-            if random.random() < exploration_guidance:
-                # Find valid action that moves downhill along potential (Dijkstra gradient) with wall clearance bias
-                ax, ay = env.agents[aid].pos
-                curr_pot = env._get_exit_dist(ax, ay)
-                best_act = 0
-                best_score = -999.0
-                valid_acts = np.where(m == 1)[0]
-                for act_cand in valid_acts:
-                    if act_cand == 0: continue
-                    dx, dy = env.ACTION_DELTAS[act_cand]
-                    nx, ny = ax + dx, ay + dy
-                    prog = curr_pot - env._get_exit_dist(nx, ny)
-                    # Wall clearance bias: prefer corridor center over hugging walls
-                    w_dist = env.wall_dist_grid[ny, nx] if (0 <= ny < env.h and 0 <= nx < env.w) else 0.0
-                    wall_bias = min(w_dist, 10.0) * 0.15
-                    score = prog + wall_bias
-                    if score > best_score:
-                        best_score = score
-                        best_act = act_cand
-                act = best_act if best_act in valid_acts else int(np.random.choice(valid_acts))
-                # Pass through network for evaluation
-                _, logp, val, h_next = policy.act_rnn(s, p, m, hidden_state=h_in)
-            else:
-                act, logp, val, h_next = policy.act_rnn(s, p, m, hidden_state=h_in)
+            s_t, p_t, m_t = policy._prepare_inputs(s, p, m, device=device)
+            h_t = h_in.to(device) if h_in is not None else None
 
-            agent_hiddens[aid] = h_next.detach()
+            with torch.no_grad():
+                logits, val_t, h_next = policy.forward_rnn(s_t, p_t, m_t, h_t)
+                dist = torch.distributions.Categorical(logits=logits)
+
+                if random.random() < exploration_guidance:
+                    ax, ay = env.agents[aid].pos
+                    curr_pot = env._get_exit_dist(ax, ay)
+                    best_act = 0
+                    best_score = -999.0
+                    valid_acts = np.where(m == 1)[0]
+                    for act_cand in valid_acts:
+                        if act_cand == 0: continue
+                        dx, dy = env.ACTION_DELTAS[act_cand]
+                        nx, ny = ax + dx, ay + dy
+                        prog = curr_pot - env._get_exit_dist(nx, ny)
+                        w_dist = env.wall_dist_grid[ny, nx] if (0 <= ny < env.h and 0 <= nx < env.w) else 0.0
+                        wall_bias = min(w_dist, 10.0) * 0.15
+                        score = prog + wall_bias
+                        if score > best_score:
+                            best_score = score
+                            best_act = act_cand
+                    act = best_act if best_act in valid_acts else int(np.random.choice(valid_acts))
+                else:
+                    act = int(dist.sample().item())
+
+                # Exact log probability of the action actually chosen under the policy
+                act_tensor = torch.tensor([act], device=device)
+                logp = float(dist.log_prob(act_tensor).item())
+                val  = float(val_t.item())
+
+            agent_hiddens[aid] = h_next.detach().cpu()
             actions[aid] = act
-
-            buf.add(
+            step_records[aid] = (
                 torch.from_numpy(s).permute(2, 0, 1).float(),
                 torch.from_numpy(p).float(),
                 torch.from_numpy(m).bool(),
-                act, logp, val,
-                0.0, False, h_in
+                act, logp, val, h_in
             )
 
         obs, rewards, term, trunc, info = env.step(actions)
 
-        active_aids = list(actions.keys())
-        for i, aid in enumerate(active_aids):
+        # Store transitions per-agent
+        for aid, (s_rec, p_rec, m_rec, a_rec, lp_rec, v_rec, h_rec) in step_records.items():
             r = rewards.get(aid, 0.0)
             d = term.get(aid, False) or trunc.get(aid, False)
-            idx = len(buf) - len(active_aids) + i
-            buf.rewards[idx] = r
-            buf.dones[idx]   = d
-            ep_rewards[aid]  = ep_rewards.get(aid, 0.0) + r
+            buf.get_trajectory(aid).add(
+                s_rec, p_rec, m_rec, a_rec, lp_rec, v_rec, r, d, h_rec
+            )
+            ep_rewards[aid] = ep_rewards.get(aid, 0.0) + r
 
         for aid, agent in env.agents.items():
             if not agent.is_evacuated and not agent.is_dead:
@@ -238,33 +293,19 @@ def run_episode(
 def ppo_update(
     policy: ActorCriticRNN,
     optimizer: optim.Optimizer,
-    buf: RolloutBuffer,
-    device: torch.device,
+    batch: Optional[Dict[str, torch.Tensor]],
 ) -> float:
-    T = len(buf)
-    if T == 0:
+    if batch is None:
         return 0.0
 
-    advantages = np.zeros(T, dtype=np.float32)
-    returns    = np.zeros(T, dtype=np.float32)
-    gae = 0.0
-    for t in reversed(range(T)):
-        next_val = buf.values[t + 1] if (t + 1 < T and not buf.dones[t]) else 0.0
-        delta    = buf.rewards[t] + GAMMA * next_val - buf.values[t]
-        gae      = delta + GAMMA * GAE_LAMBDA * (1.0 - float(buf.dones[t])) * gae
-        advantages[t] = gae
-        returns[t]    = advantages[t] + buf.values[t]
-
-    adv_t  = torch.tensor(advantages, dtype=torch.float32, device=device)
-    adv_t  = (adv_t - adv_t.mean()) / (adv_t.std() + 1e-8)
-
-    b_s    = torch.stack(buf.spatials).to(device)
-    b_p    = torch.stack(buf.proprios).to(device)
-    b_m    = torch.stack(buf.masks).to(device)
-    b_a    = torch.tensor(buf.actions, dtype=torch.int64, device=device)
-    b_lp   = torch.tensor(buf.logprobs, dtype=torch.float32, device=device)
-    b_ret  = torch.tensor(returns, dtype=torch.float32, device=device)
-    b_h    = torch.cat(buf.hiddens, dim=0).to(device)
+    b_s   = batch["spatials"]
+    b_p   = batch["proprios"]
+    b_m   = batch["masks"]
+    b_a   = batch["actions"]
+    b_lp  = batch["logprobs"]
+    adv_t = batch["advantages"]
+    b_ret = batch["returns"]
+    b_h   = batch["hiddens"]
 
     grad_norms = []
     for _ in range(PPO_EPOCHS):
@@ -417,12 +458,13 @@ def main():
     print(f"  {'-'*4}  {'-'*14}  {'-'*11}  {'-'*8}  {'-'*9}  {'-'*9}  ---------", flush=True)
 
     for ep in range(1, args.episodes + 1):
-        buf = RolloutBuffer()
+        buf = MultiAgentRolloutBuffer()
         result, s_png, e_png, v_path = run_episode(
-            env, base_bgr, policy, buf, ep, args, run_dir
+            env, base_bgr, policy, buf, ep, args, run_dir, device
         )
 
-        gnorm = ppo_update(policy, optimizer, buf, device)
+        batch = buf.compile(device)
+        gnorm = ppo_update(policy, optimizer, batch)
         history.append({**result, "gnorm": gnorm})
 
         evac = result["evacuated"]
@@ -469,7 +511,7 @@ def main():
         f"Fire Bottleneck  : Origin {FIRE_ORIGIN} (Aggressive spread: sigma=0.20, interval=2)",
         f"Occupant Crowd   : {args.agents} agents (Stratified spawn across 4 building sectors)",
         f"Movement Profile : 4px/step (Adult: 1 tick/step, Young/Elderly: 2 ticks/step)",
-        f"Wall Avoidance   : Stacking penalty (up to -5.0/tick) for staying near walls >2 ticks",
+        f"Wall Safety      : Action-masking wall collision prevention + corridor centering",
         f"Total Episodes   : {args.episodes}",
         f"Max Ticks/Ep     : {args.ticks}",
         "--------------------------------------------------------------------------",

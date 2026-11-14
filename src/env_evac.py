@@ -283,12 +283,31 @@ class HazardEvacEnv(gym.Env):
         mask = np.zeros(9, dtype=np.int8)
         mask[0] = 1  # Stay is always possible
         ax, ay = agent.pos
+        exit_dist = self._get_exit_dist(ax, ay)
+        near_exit = exit_dist <= 60.0
+
         for a_idx, (dx, dy) in enumerate(self.ACTION_DELTAS):
             if a_idx == 0:
                 continue
             tx, ty = ax + dx, ay + dy
-            if self.is_valid_step(ax, ay, tx, ty):
+            if not self.is_valid_step(ax, ay, tx, ty):
+                continue
+
+            # Hard wall clearance masking:
+            # Forbid stepping into positions touching/hugging walls (< 3.0px) unless near an exit
+            if near_exit or self.wall_dist_grid[ty, tx] >= 3.0:
                 mask[a_idx] = 1
+
+        # Fallback: if wall clearance masked out all non-stay moves (e.g. narrow doorways),
+        # allow all valid free-space steps so agent is never trapped
+        if mask[1:].sum() == 0:
+            for a_idx, (dx, dy) in enumerate(self.ACTION_DELTAS):
+                if a_idx == 0:
+                    continue
+                tx, ty = ax + dx, ay + dy
+                if self.is_valid_step(ax, ay, tx, ty):
+                    mask[a_idx] = 1
+
         return mask
 
     def _get_agent_observation(self, agent: EvacAgentState) -> Dict[str, np.ndarray]:
@@ -371,7 +390,7 @@ class HazardEvacEnv(gym.Env):
         for aid in active_ids:
             agent  = self.agents[aid]
             agent.ticks_remaining += 1
-            reward = -0.05  # time step cost
+            reward = -0.02  # base time step cost
 
             if agent.ticks_remaining >= agent.period:
                 agent.ticks_remaining = 0
@@ -394,34 +413,41 @@ class HazardEvacEnv(gym.Env):
                     agent.is_dead = True
                     self.death_positions[aid] = (cx, cy)
                     self.occupancy_grid[cy, cx] = False
-                    reward -= 350.0  # Massive penalty for dying in fire
+                    reward -= 200.0  # Clear fire demise penalty
                     terminated[aid] = True
 
                 # 2. INVALID / WALL STEP
                 elif not self.is_valid_step(cx, cy, tx, ty):
-                    agent.wall_stick_ticks += 2  # Wall collision accelerates sticking penalty
-                    reward -= 1.5
+                    reward -= 1.0
 
-                # 3. SUCCESSFUL STEP
+                # 3. VOLUNTARY IDLING (Anti-freeze penalty: don't stand still in burning building)
+                elif action == 0:
+                    reward -= 0.25
+
+                # 4. SUCCESSFUL FORWARD STEP
                 else:
                     prev_pot = self._get_exit_dist(cx, cy)
                     curr_pot = self._get_exit_dist(tx, ty)
 
-                    # Progress reward: strong incentive to move toward exit
+                    # Progress reward: positive incentive to advance toward exit
                     progress = prev_pot - curr_pot
-                    reward  += 3.0 * progress
+                    reward  += 4.0 * progress
 
                     # Hazard proximity penalty: exponential repulsion from fire
                     fire_dist_px = self.fire_dist_grid[ty, tx] * 100.0
                     if fire_dist_px < 35.0:
-                        reward -= 25.0 * math.exp(-fire_dist_px / 12.0)
+                        reward -= 15.0 * math.exp(-fire_dist_px / 12.0)
+
+                    # Gentle wall proximity shaping: prefer corridor center
+                    if self.wall_dist_grid[ty, tx] < 3.5:
+                        reward -= 0.15
 
                     # Update position
                     self.occupancy_grid[cy, cx] = False
                     agent.pos = (tx, ty)
                     self.occupancy_grid[ty, tx] = True
 
-                    # 4. EXIT REACHED CHECK
+                    # 5. EXIT REACHED CHECK
                     if self.exit_coords:
                         min_exit_dist = min(math.hypot(tx - ex, ty - ey) for ex, ey in self.exit_coords)
                         if min_exit_dist <= self.exit_reach_dist:
@@ -429,22 +455,6 @@ class HazardEvacEnv(gym.Env):
                             self.occupancy_grid[ty, tx] = False
                             reward += self.exit_reward
                             terminated[aid] = True
-
-                # 5. WALL STICKING & PROXIMITY CHECK (Stacking Penalty)
-                if not terminated.get(aid, False):
-                    curr_x, curr_y = agent.pos
-                    dist_to_wall = self.wall_dist_grid[curr_y, curr_x]
-                    if dist_to_wall <= 4.0:
-                        agent.wall_stick_ticks += 1
-                    else:
-                        # Moving into open corridor space resets/decays wall sticking counter
-                        agent.wall_stick_ticks = max(0, agent.wall_stick_ticks - 2)
-
-                    # Stacking penalty if sticking near/against wall for more than 2 consecutive moves
-                    if agent.wall_stick_ticks > 2:
-                        excess_ticks = agent.wall_stick_ticks - 2
-                        stacking_wall_penalty = min(5.0, 0.25 * excess_ticks)
-                        reward -= stacking_wall_penalty
 
             rewards[aid]    = reward
             terminated[aid] = terminated.get(aid, agent.is_evacuated or agent.is_dead)
