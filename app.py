@@ -275,6 +275,50 @@ with tabs[2]:
                 if os.path.exists(video_out):
                     st.video(video_out)
 
+    st.markdown("---")
+    st.markdown("### 📊 Episode-by-Episode Training Results & Visual Gallery")
+    st.caption("Inspect the progression of learning, demographic path tracing, hazard deaths, and video playback per episode.")
+
+    rl_runs_dir = os.path.join(current_dir, "outputs", "rl_runs")
+    chart_file = os.path.join(rl_runs_dir, "improvement_chart.png")
+
+    if os.path.exists(chart_file):
+        st.image(chart_file, caption="RL Training Progression across Episodes", use_container_width=True)
+
+        summary_file = os.path.join(rl_runs_dir, "summary.txt")
+        if os.path.exists(summary_file):
+            with open(summary_file, "r", encoding="utf-8") as sf:
+                with st.expander("📄 View Training Log & Metrics Summary"):
+                    st.text(sf.read())
+
+        mp4_files = sorted([f for f in os.listdir(rl_runs_dir) if f.startswith("ep") and f.endswith(".mp4")])
+        if mp4_files:
+            selected_ep_file = st.selectbox(
+                "🎬 Select Episode to Inspect (Start vs. End Snapshot & Video Playback):",
+                options=mp4_files,
+                format_func=lambda x: f"Episode {int(x[2:4])} ({x})"
+            )
+            ep_tag = selected_ep_file.replace(".mp4", "")
+            start_img_path = os.path.join(rl_runs_dir, f"{ep_tag}_start.png")
+            end_img_path = os.path.join(rl_runs_dir, f"{ep_tag}_end.png")
+            vid_path = os.path.join(rl_runs_dir, selected_ep_file)
+
+            c_snap1, c_snap2 = st.columns(2)
+            with c_snap1:
+                st.markdown("**📸 Start Snapshot (Tick 000 - Spawns)**")
+                if os.path.exists(start_img_path):
+                    st.image(start_img_path, use_container_width=True)
+            with c_snap2:
+                st.markdown("**🏁 End Snapshot (Final Tick - Evacuated / Deaths)**")
+                if os.path.exists(end_img_path):
+                    st.image(end_img_path, use_container_width=True)
+
+            st.markdown(f"**🎥 Full Episode Video Playback ({selected_ep_file})**")
+            if os.path.exists(vid_path):
+                st.video(vid_path)
+    else:
+        st.info("No training runs found in `outputs/rl_runs`. Run `python run_rl.py` to generate per-episode videos and charts.")
+
 # TAB 4: Status & Architecture
 with tabs[3]:
     st.subheader("Project Status & Dual-Track Architecture")
